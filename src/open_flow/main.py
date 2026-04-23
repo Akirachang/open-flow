@@ -1,4 +1,4 @@
-"""Entry point — Phase 2: hotkey + audio capture + Whisper transcription."""
+"""Entry point — Phase 3: hotkey + audio + transcription + text injection."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from threading import Thread
 from open_flow import config as cfg_module
 from open_flow.audio import AudioRecorder, LAST_WAV
 from open_flow.hotkey import HotkeyListener
+from open_flow.inject import inject
+from open_flow.permissions import check_all, open_accessibility_settings
 from open_flow.transcribe import Transcriber
 
 logging.basicConfig(
@@ -23,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     cfg = cfg_module.load()
+
+    if not check_all():
+        print("\nAccessibility permission is required for text injection.")
+        print("Opening System Settings…")
+        open_accessibility_settings()
+        print("Grant access, then relaunch open-flow.")
+        sys.exit(1)
+
     recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
     transcriber = Transcriber(cfg)
 
@@ -43,15 +53,23 @@ def main() -> None:
         record_duration = time.monotonic() - _start_time
         recorder.save_wav(audio, LAST_WAV)
 
-        def _transcribe() -> None:
+        def _process() -> None:
+            t0 = time.monotonic()
             print("  Transcribing…", flush=True)
             text = transcriber.transcribe(audio, record_duration)
-            if text:
-                print(f"  → {text}\n", flush=True)
-            else:
-                print("  → (no speech detected)\n", flush=True)
 
-        Thread(target=_transcribe, daemon=True).start()
+            if not text:
+                print("  → (no speech detected)\n", flush=True)
+                return
+
+            print(f"  → {text}", flush=True)
+
+            injected = inject(text)
+            total = time.monotonic() - t0 + record_duration
+            status = "injected" if injected else "skipped (password field)"
+            print(f"  ✓ {status} | total latency {total:.2f}s\n", flush=True)
+
+        Thread(target=_process, daemon=True).start()
 
     hotkey = HotkeyListener(
         key_name=cfg.hotkey,
@@ -60,8 +78,8 @@ def main() -> None:
     )
     hotkey.start()
 
-    print(f"Open Flow — Phase 2")
-    print(f"Hold [{cfg.hotkey}] to record. Press Ctrl-C to quit.\n")
+    print("Open Flow — Phase 3")
+    print(f"Hold [{cfg.hotkey}] to record and inject. Press Ctrl-C to quit.\n")
 
     def _shutdown(sig: int, frame: object) -> None:
         print("\nShutting down…")
