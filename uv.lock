@@ -582,6 +582,7 @@ source = { editable = "." }
 dependencies = [
     { name = "faster-whisper" },
     { name = "huggingface-hub" },
+    { name = "llama-cpp-python" },
     { name = "numpy" },
     { name = "pynput" },
     { name = "pyobjc-core" },
@@ -592,16 +593,11 @@ dependencies = [
     { name = "tomli-w" },
 ]
 
-[package.optional-dependencies]
-llm = [
-    { name = "llama-cpp-python" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "faster-whisper", specifier = ">=1.0.0" },
     { name = "huggingface-hub", specifier = ">=0.20.0" },
-    { name = "llama-cpp-python", marker = "extra == 'llm'", specifier = ">=0.2.56" },
+    { name = "llama-cpp-python", specifier = ">=0.2.56" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pynput", specifier = ">=1.7.6" },
     { name = "pyobjc-core", specifier = ">=10.0" },
@@ -612,7 +608,6 @@ requires-dist = [
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0" },
 ]
-provides-extras = ["llm"]
 
 [[package]]
 name = "packaging"

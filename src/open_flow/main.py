@@ -1,4 +1,4 @@
-"""Entry point — Phase 3: hotkey + audio + transcription + text injection."""
+"""Entry point — Phase 4: hotkey + audio + transcription + LLM cleanup + injection."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from threading import Thread
 
 from open_flow import config as cfg_module
 from open_flow.audio import AudioRecorder, LAST_WAV
+from open_flow.cleanup import Cleaner
 from open_flow.hotkey import HotkeyListener
 from open_flow.inject import inject
 from open_flow.permissions import check_all, open_accessibility_settings
@@ -35,10 +36,16 @@ def main() -> None:
 
     recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
     transcriber = Transcriber(cfg)
+    cleaner = Cleaner(cfg) if cfg.llm_enabled else None
 
-    print("Loading Whisper model… (first run may take a few seconds)")
+    print("Loading Whisper model…")
     transcriber.load()
-    print("Model ready.\n")
+
+    if cleaner is not None:
+        print("Loading LLM…")
+        cleaner.load()
+
+    print("Ready.\n")
 
     _start_time: float = 0.0
 
@@ -55,12 +62,16 @@ def main() -> None:
 
         def _process() -> None:
             t0 = time.monotonic()
+
             print("  Transcribing…", flush=True)
             text = transcriber.transcribe(audio, record_duration)
-
             if not text:
                 print("  → (no speech detected)\n", flush=True)
                 return
+
+            if cleaner is not None:
+                print("  Cleaning…", flush=True)
+                text = cleaner.clean(text, record_duration)
 
             print(f"  → {text}", flush=True)
 
@@ -78,8 +89,9 @@ def main() -> None:
     )
     hotkey.start()
 
-    print("Open Flow — Phase 3")
-    print(f"Hold [{cfg.hotkey}] to record and inject. Press Ctrl-C to quit.\n")
+    llm_status = "on" if cfg.llm_enabled else "off"
+    print("Open Flow — Phase 4")
+    print(f"Hold [{cfg.hotkey}] to record. LLM cleanup={llm_status}. Ctrl-C to quit.\n")
 
     def _shutdown(sig: int, frame: object) -> None:
         print("\nShutting down…")
