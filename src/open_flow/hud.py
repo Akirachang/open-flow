@@ -224,7 +224,7 @@ class HUD:
         effect.setMaterial_(2)
         effect.setState_(1)
         effect.setWantsLayer_(True)
-        effect.layer().setCornerRadius_(24)
+        effect.layer().setCornerRadius_(22)
         effect.layer().setMasksToBounds_(True)
 
         self._view = _WaveformView.alloc().initWithFrame_(
