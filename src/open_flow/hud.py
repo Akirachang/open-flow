@@ -162,7 +162,7 @@ class HUD:
 
         else:
             rms = self._current_rms
-            base = min(rms * 35, 1.0)
+            base = min(rms * 60, 1.0)
             # Smooth wave shape: sine envelope across bars, animated phase
             phase = self._tick * 0.18
             for i in range(_BAR_COUNT):
@@ -172,7 +172,7 @@ class HUD:
                 # Slow travelling wave for organic movement
                 wave = 0.5 + 0.5 * math.sin(phase + t * math.pi * 2)
                 target = base * envelope * (0.7 + 0.3 * wave)
-                target = max(0.04, min(1.0, target))
+                target = max(0.02, min(1.0, target))
                 cur = self._levels[i]
                 self._levels[i] = cur + (target - cur) * (0.25 if target > cur else 0.12)
             self._view.setLevels_(list(self._levels))
