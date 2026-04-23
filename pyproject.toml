@@ -1,0 +1,40 @@
+[project]
+name = "open-flow"
+version = "0.1.0"
+description = "Offline push-to-talk voice dictation for macOS"
+requires-python = ">=3.11"
+dependencies = [
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "faster-whisper>=1.0.0",
+    "pynput>=1.7.6",
+    "pyobjc-core>=10.0",
+    "pyobjc-framework-Cocoa>=10.0",
+    "pyobjc-framework-ApplicationServices>=10.0",
+    "rumps>=0.4.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+    "tomli-w>=1.0.0",
+    "huggingface-hub>=0.20.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "llama-cpp-python>=0.2.56",
+]
+
+[project.scripts]
+open-flow = "open_flow.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_flow"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
