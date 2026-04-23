@@ -111,6 +111,10 @@ class _WaveformView(NSView):
             ).fill()
 
 
+_FADE_IN_STEP = 0.15   # alpha added per tick (~4 frames to full opacity at 30Hz)
+_FADE_OUT_STEP = 0.10  # alpha removed per tick (~10 frames to invisible)
+
+
 class HUD:
     def __init__(self) -> None:
         self._window: NSWindow | None = None
@@ -119,6 +123,8 @@ class HUD:
         self._levels: list[float] = [0.05] * _BAR_COUNT
         self._state: str = _STATE_RECORDING
         self._tick: int = 0
+        self._alpha: float = 0.0
+        self._fading_out: bool = False
 
     def build(self) -> None:
         self._ensure_window()
@@ -128,26 +134,28 @@ class HUD:
         self._state = _STATE_RECORDING
         self._levels = [0.05] * _BAR_COUNT
         self._current_rms = 0.0
+        self._fading_out = False
         if self._view:
             self._view.setState_(_STATE_RECORDING)
         if self._window:
+            self._window.setAlphaValue_(0.0)
             self._window.orderFront_(None)
 
     def show_loading(self) -> None:
         self._ensure_window()
         self._state = _STATE_LOADING
+        self._fading_out = False
         if self._view:
             self._view.setState_(_STATE_LOADING)
-        if self._window:
+        if self._window and not self._window.isVisible():
+            self._window.setAlphaValue_(0.0)
             self._window.orderFront_(None)
 
-    # Keep show() as alias for show_recording for backward compat
     def show(self) -> None:
         self.show_recording()
 
     def hide(self) -> None:
-        if self._window:
-            self._window.orderOut_(None)
+        self._fading_out = True
 
     def tick(self) -> None:
         if self._view is None or self._window is None:
@@ -157,19 +165,26 @@ class HUD:
 
         self._tick += 1
 
+        # Fade in / fade out
+        if self._fading_out:
+            self._alpha = max(0.0, self._alpha - _FADE_OUT_STEP)
+            self._window.setAlphaValue_(self._alpha)
+            if self._alpha <= 0.0:
+                self._window.orderOut_(None)
+            return
+        else:
+            self._alpha = min(1.0, self._alpha + _FADE_IN_STEP)
+            self._window.setAlphaValue_(self._alpha)
+
         if self._state == _STATE_LOADING:
             self._view.setTick_(self._tick)
-
         else:
             rms = self._current_rms
             base = min(rms * 60, 1.0)
-            # Smooth wave shape: sine envelope across bars, animated phase
             phase = self._tick * 0.18
             for i in range(_BAR_COUNT):
-                t = i / (_BAR_COUNT - 1)  # 0.0 → 1.0
-                # Bell envelope so edges are shorter than center
+                t = i / (_BAR_COUNT - 1)
                 envelope = math.sin(math.pi * t)
-                # Slow travelling wave for organic movement
                 wave = 0.5 + 0.5 * math.sin(phase + t * math.pi * 2)
                 target = base * envelope * (0.7 + 0.3 * wave)
                 target = max(0.02, min(1.0, target))
