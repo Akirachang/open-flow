@@ -13,6 +13,13 @@ from open_flow.config import Config
 
 logger = logging.getLogger(__name__)
 
+# RMS energy threshold below which a frame is considered silence (0–1 scale)
+_VAD_THRESHOLD = 0.01
+# Frame size for VAD energy check (~20ms at 16kHz)
+_VAD_FRAME = 320
+# Pad this many frames of context either side of speech so we don't clip words
+_VAD_PADDING_FRAMES = 8
+
 # Whisper hallucination blocklist — common silent-audio outputs
 _HALLUCINATIONS: frozenset[str] = frozenset(
     [
@@ -25,6 +32,30 @@ _HALLUCINATIONS: frozenset[str] = frozenset(
         "",
     ]
 )
+
+
+def _vad_trim(audio: np.ndarray) -> np.ndarray:
+    """Strip leading and trailing silence based on RMS energy per frame."""
+    if len(audio) == 0:
+        return audio
+
+    float_audio = audio.astype(np.float32) / 32768.0
+    n_frames = len(float_audio) // _VAD_FRAME
+    if n_frames == 0:
+        return audio
+
+    # Compute RMS for each frame
+    frames = float_audio[: n_frames * _VAD_FRAME].reshape(n_frames, _VAD_FRAME)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    speech = rms > _VAD_THRESHOLD
+
+    if not np.any(speech):
+        return audio  # all silence — return as-is, let hallucination filter handle it
+
+    first = max(0, np.argmax(speech) - _VAD_PADDING_FRAMES)
+    last = min(n_frames, len(speech) - np.argmax(speech[::-1]) + _VAD_PADDING_FRAMES)
+
+    return audio[first * _VAD_FRAME : last * _VAD_FRAME]
 
 
 class Transcriber:
@@ -55,6 +86,15 @@ class Transcriber:
         if record_duration < self._cfg.min_audio_seconds:
             logger.info("Audio too short (%.2fs), skipping transcription", record_duration)
             return None
+
+        audio = _vad_trim(audio)
+        trimmed_duration = len(audio) / self._cfg.sample_rate
+
+        if trimmed_duration < self._cfg.min_audio_seconds:
+            logger.info("Audio is silence after VAD trim, skipping")
+            return None
+
+        logger.debug("VAD trim: %.2fs → %.2fs", record_duration, trimmed_duration)
 
         t0 = time.monotonic()
         segments, info = self._model.transcribe(
