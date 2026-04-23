@@ -6,7 +6,7 @@ import logging
 import wave
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -25,13 +25,17 @@ class AudioRecorder:
         self._lock = Lock()
         self._stream: sd.InputStream | None = None
         self._recording = Event()
+        self.on_chunk: Optional[Callable[[np.ndarray], None]] = None
 
     def _callback(self, indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags) -> None:  # noqa: ANN401
         if status:
             logger.warning("sounddevice status: %s", status)
         if self._recording.is_set():
+            chunk = indata.copy()
             with self._lock:
-                self._chunks.append(indata.copy())
+                self._chunks.append(chunk)
+            if self.on_chunk is not None:
+                self.on_chunk(chunk.flatten())
 
     def start(self) -> None:
         if self._stream is not None:
