@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.uv/
+
+# Models (large files — stored in ~/.cache/open_flow/models/)
+*.gguf
+*.bin
+*.safetensors
+
+# Runtime
+/tmp/open_flow_*.wav
+
+# macOS
+.DS_Store
+
+# Config (user-specific, not for VCS)
+# ~/.config/open_flow/ is outside the repo anyway
+
+# IDE
+.vscode/
+.idea/
+
+CLAUDE.md
