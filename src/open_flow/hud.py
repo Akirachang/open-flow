@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import math
-import random
 
 import numpy as np
 import objc
@@ -31,7 +30,7 @@ _BAR_COUNT = 24
 _WIDTH = 180
 _HEIGHT = 48
 _BOTTOM_OFFSET = 60
-_DECAY = 0.88
+_DECAY = 0.92
 
 _WHITE = NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 1.0, 1.0, 1.0)
 
@@ -164,12 +163,18 @@ class HUD:
         else:
             rms = self._current_rms
             base = min(rms * 35, 1.0)
+            # Smooth wave shape: sine envelope across bars, animated phase
+            phase = self._tick * 0.18
             for i in range(_BAR_COUNT):
-                center_dist = abs(i - _BAR_COUNT / 2) / (_BAR_COUNT / 2)
-                target = base * (1.0 - center_dist * 0.4) * random.uniform(0.75, 1.25)
-                target = max(0.05, min(1.0, target))
+                t = i / (_BAR_COUNT - 1)  # 0.0 → 1.0
+                # Bell envelope so edges are shorter than center
+                envelope = math.sin(math.pi * t)
+                # Slow travelling wave for organic movement
+                wave = 0.5 + 0.5 * math.sin(phase + t * math.pi * 2)
+                target = base * envelope * (0.7 + 0.3 * wave)
+                target = max(0.04, min(1.0, target))
                 cur = self._levels[i]
-                self._levels[i] = target if target > cur else cur * _DECAY + target * (1 - _DECAY)
+                self._levels[i] = cur + (target - cur) * (0.25 if target > cur else 0.12)
             self._view.setLevels_(list(self._levels))
 
     def push_audio(self, chunk: np.ndarray) -> None:
