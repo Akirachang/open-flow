@@ -49,6 +49,8 @@ class OpenFlowApp(rumps.App):
         self._pipeline = DictationPipeline(self._transcriber, cleaner=None)
         self._hotkey: HotkeyListener | None = None
         self._hud = HUD()
+        self._toast = None   # lazy-init on first use (requires main thread)
+        self._dashboard = None
         self._start_time: float = 0.0
         self._ready = False
 
@@ -59,7 +61,7 @@ class OpenFlowApp(rumps.App):
         )
 
         self.menu = [
-            rumps.MenuItem("Open Flow", callback=None),
+            rumps.MenuItem("Open Flow…", callback=self._open_dashboard),
             None,
             self._status_item,
             None,
@@ -160,9 +162,9 @@ class OpenFlowApp(rumps.App):
             audio, record_duration, on_status=_status
         )
 
-        self._render_result(result)
+        self._render_result(result, record_duration)
 
-    def _render_result(self, result: PipelineResult) -> None:
+    def _render_result(self, result: PipelineResult, latency: float) -> None:
         def _finish(title: str, status: str) -> None:
             _call_on_main_thread(
                 lambda: (setattr(self, "title", title),
@@ -174,6 +176,11 @@ class OpenFlowApp(rumps.App):
             total = time.monotonic() - self._start_time
             preview = result.text[:50] + ("…" if len(result.text) > 50 else "")
             _finish(_ICON_IDLE, f"Done ({total:.1f}s) — {preview}")
+
+            # Log to activity + show toast
+            _call_on_main_thread(
+                lambda: self._post_inject(result, total)
+            )
             return
 
         reason = result.skipped_reason
@@ -189,9 +196,66 @@ class OpenFlowApp(rumps.App):
         else:
             _finish(_ICON_ERROR, f"Error: {result.error or 'unknown'}")
 
+    def _post_inject(self, result: PipelineResult, latency: float) -> None:
+        """Called on main thread after successful injection."""
+        import AppKit
+
+        # Detect focused app name
+        try:
+            app_name = (AppKit.NSWorkspace.sharedWorkspace()
+                        .frontmostApplication()
+                        .localizedName() or "Unknown")
+        except Exception:
+            app_name = "Unknown"
+
+        # Log activity entry
+        from open_flow.data import activity as act_module
+        ts = time.time()
+        entry = act_module.ActivityEntry(
+            timestamp=ts,
+            raw=result.raw_text or result.text or "",
+            cleaned=result.text or "",
+            correction=None,
+            app=app_name,
+            latency=round(latency, 3),
+        )
+        act_module.append(entry)
+
+        # Show toast
+        self._ensure_toast()
+        self._toast.show(
+            text=result.text or "",
+            latency=round(latency, 2),
+            app=app_name,
+            timestamp=ts,
+            on_correction=self._on_correction,
+        )
+
+    def _on_correction(self, original: str, edit: str) -> None:
+        """Callback from toast edit — log correction in activity log."""
+        from open_flow.data import activity as act_module
+        # find most recent matching entry and amend
+        entries = act_module.load_recent(10)
+        for e in entries:
+            if e.cleaned == original:
+                act_module.amend_correction(e.timestamp, edit)
+                logger.info("Correction logged: %r → %r", original, edit)
+                break
+
+    def _ensure_toast(self) -> None:
+        if self._toast is None:
+            from open_flow.ui.toast import Toast
+            self._toast = Toast()
+
     # ------------------------------------------------------------------ #
     # Menu actions                                                         #
     # ------------------------------------------------------------------ #
+
+    def _open_dashboard(self, _: rumps.MenuItem) -> None:
+        if self._dashboard is None:
+            from open_flow.ui.dashboard import Dashboard
+            self._dashboard = Dashboard(self._cfg, cfg_module.save)
+        self._dashboard.show()
 
     def _toggle_llm(self, sender: rumps.MenuItem) -> None:
         self._cfg.llm_enabled = not self._cfg.llm_enabled

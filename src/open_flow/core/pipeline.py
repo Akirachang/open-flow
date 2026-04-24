@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 class PipelineResult:
     text: Optional[str]         # final text that was (or would have been) injected
     injected: bool              # True if successfully pasted into the focused app
+    raw_text: Optional[str] = None       # pre-cleanup transcript
     skipped_reason: Optional[str] = None  # "no_speech" | "password_field" | "error"
     error: Optional[str] = None
 
@@ -54,25 +55,26 @@ class DictationPipeline:
     ) -> PipelineResult:
         try:
             on_status("Transcribing…")
-            text = self._transcriber.transcribe(audio, record_duration)
+            raw = self._transcriber.transcribe(audio, record_duration)
 
-            if not text:
-                return PipelineResult(text=None, injected=False,
+            if not raw:
+                return PipelineResult(text=None, raw_text=None, injected=False,
                                       skipped_reason="no_speech")
 
+            text = raw
             if self._cleaner is not None:
                 on_status("Cleaning…")
-                text = self._cleaner.clean(text, record_duration)
+                text = self._cleaner.clean(raw, record_duration)
 
             on_status("Injecting…")
             injected = inject_text(text)
             if not injected:
-                return PipelineResult(text=text, injected=False,
+                return PipelineResult(text=text, raw_text=raw, injected=False,
                                       skipped_reason="password_field")
 
-            return PipelineResult(text=text, injected=True)
+            return PipelineResult(text=text, raw_text=raw, injected=True)
 
         except Exception as exc:
             logger.exception("Pipeline error")
-            return PipelineResult(text=None, injected=False,
+            return PipelineResult(text=None, raw_text=None, injected=False,
                                   skipped_reason="error", error=str(exc))
