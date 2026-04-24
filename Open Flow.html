@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Open Flow</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #2a2520; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  * { box-sizing: border-box; }
+  @keyframes of-pulse {
+    0% { box-shadow: 0 0 0 0 currentColor; }
+    70% { box-shadow: 0 0 0 8px rgba(0,0,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+  }
+  @keyframes of-bounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  button { font-family: inherit; }
+  button:focus-visible { outline: 2px solid #C96442; outline-offset: 2px; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+
+/* ── Design Tokens ── */
+const CL = {
+  fontSerif: '"Source Serif 4", "Source Serif Pro", "Charter", "Iowan Old Style", Georgia, serif',
+  fontSans: '"Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
+  fontMono: 'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace',
+  fontHand: '"Caveat", "Kalam", "Shadows Into Light", "Patrick Hand", cursive',
+
+  paper: '#F5F1EB',
+  paperDeep: '#EDE7DB',
+  card: '#FAF7F1',
+  ink: '#1F1B16',
+  inkSoft: '#3C332A',
+  muted: '#6B5F52',
+  subtle: '#928477',
+  line: 'rgba(60,51,42,0.12)',
+  lineStrong: 'rgba(60,51,42,0.22)',
+  lineHair: 'rgba(60,51,42,0.07)',
+
+  accent: '#C96442',
+  accentSoft: '#E3A38A',
+  accentWash: '#F2D6C7',
+  accentDeep: '#A8492E',
+  accentInk: '#6E2B17',
+
+  good: '#5E8A4E',
+  warn: '#C48A2B',
+  danger: '#B6503C',
+};
+
+
+/* ── Paper Grain ── */
+function PaperGrain({ style = {} }) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, pointerEvents: 'none',
+      backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12 0 0 0 0 0.10 0 0 0 0 0.08 0 0 0 0.055 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")`,
+      mixBlendMode: 'multiply',
+      opacity: 0.7,
+      borderRadius: 'inherit',
+      ...style,
+    }} />
+  );
+}
+
+
+/* ── Hand-Drawn SVG Accents ── */
+function HandUnderline({ width = 160, color = CL.accent, strokeWidth = 2.4, style = {} }) {
+  return (
+    <svg width={width} height="12" viewBox="0 0 160 12" fill="none" style={{ display: 'block', ...style }}>
+      <path
+        d="M2 7 C 18 3, 38 9, 58 5 S 98 8, 118 4 S 150 9, 158 6"
+        stroke={color} strokeWidth={strokeWidth}
+        strokeLinecap="round" strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+function HandCircle({ size = 140, color = CL.accent, strokeWidth = 2.4, style = {} }) {
+  return (
+    <svg width={size} height={size * 0.55} viewBox="0 0 200 110" fill="none" style={{ display: 'block', ...style }}>
+      <path
+        d="M100 12 C 160 8, 196 28, 192 56 C 188 90, 140 102, 96 100 C 44 98, 10 82, 12 56 C 14 28, 52 12, 100 10"
+        stroke={color} strokeWidth={strokeWidth}
+        strokeLinecap="round" fill="none"
+      />
+    </svg>
+  );
+}
+
+function HandArrow({ size = 56, color = CL.muted, strokeWidth = 2, style = {}, direction = 'right' }) {
+  const paths = {
+    right: (
+      <g>
+        <path d="M6 28 C 16 14, 32 14, 48 20 C 52 22, 54 24, 54 26" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" fill="none" />
+        <path d="M48 14 L 54 26 L 42 24" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </g>
+    ),
+    down: (
+      <g>
+        <path d="M28 6 C 14 16, 14 32, 20 48 C 22 52, 24 54, 26 54" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" fill="none" />
+        <path d="M14 48 L 26 54 L 24 42" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </g>
+    ),
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 60 60" fill="none" style={style}>
+      {paths[direction] || paths.right}
+    </svg>
+  );
+}
+
+
+/* ── Primitives ── */
+function CLDot({ color = CL.accent, size = 8, pulse = false, style = {} }) {
+  return (
+    <span style={{
+      display: 'inline-block', width: size, height: size, borderRadius: '50%',
+      background: color, color, flexShrink: 0,
+      animation: pulse ? 'of-pulse 1.4s ease-out infinite' : undefined,
+      ...style,
+    }} />
+  );
+}
+
+function CLButton({ children, kind = 'primary', size = 'md', onClick, disabled = false, style = {} }) {
+  const sizes = {
+    sm: { padding: '6px 12px', fontSize: 12, borderRadius: 7 },
+    md: { padding: '9px 18px', fontSize: 13.5, borderRadius: 8 },
+    lg: { padding: '12px 22px', fontSize: 14, borderRadius: 9 },
+  };
+  const kinds = {
+    primary: {
+      background: disabled ? CL.accentSoft : CL.accent,
+      color: '#fff',
+      border: 'none',
+      boxShadow: disabled ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(110,43,23,0.25)',
+    },
+    secondary: {
+      background: CL.card,
+      color: CL.ink,
+      border: `0.5px solid ${CL.lineStrong}`,
+      boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset, 0 1px 2px rgba(60,51,42,0.06)',
+    },
+    ghost: {
+      background: 'transparent',
+      color: CL.muted,
+      border: 'none',
+    },
+  };
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      onClick={onClick} disabled={disabled}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        fontFamily: CL.fontSans, fontWeight: 500,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.55 : 1,
+        letterSpacing: '-0.005em',
+        transition: 'all 120ms ease',
+        transform: hover && !disabled ? 'translateY(-0.5px)' : 'none',
+        ...sizes[size], ...kinds[kind], ...style,
+      }}
+    >{children}</button>
+  );
+}
+
+function CLKey({ label = '⌥', sub, size = 'md', pressed = false, style = {} }) {
+  const sizes = {
+    sm: { w: 34, h: 34, fs: 15, sfs: 8, radius: 6 },
+    md: { w: 56, h: 56, fs: 22, sfs: 9, radius: 9 },
+    lg: { w: 88, h: 88, fs: 34, sfs: 10, radius: 14 },
+    xl: { w: 140, h: 140, fs: 54, sfs: 12, radius: 20 },
+  }[size];
+  return (
+    <div style={{
+      width: sizes.w, height: sizes.h, borderRadius: sizes.radius,
+      background: pressed
+        ? `linear-gradient(180deg, ${CL.paperDeep}, ${CL.card})`
+        : `linear-gradient(180deg, ${CL.card}, ${CL.paperDeep})`,
+      border: `0.5px solid ${CL.lineStrong}`,
+      boxShadow: pressed
+        ? 'inset 0 2px 6px rgba(60,51,42,0.18), 0 0 0 3px rgba(201,100,66,0.18)'
+        : 'inset 0 1px 0 rgba(255,255,255,0.8), 0 2px 4px rgba(60,40,20,0.12), 0 6px 18px rgba(60,40,20,0.05)',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      gap: 4,
+      fontFamily: CL.fontSans, color: pressed ? CL.accent : CL.inkSoft,
+      transition: 'all 120ms ease',
+      userSelect: 'none',
+      ...style,
+    }}>
+      <div style={{ fontSize: sizes.fs, fontWeight: 500, lineHeight: 1, letterSpacing: '-0.02em' }}>{label}</div>
+      {sub && <div style={{ fontSize: sizes.sfs, letterSpacing: 1.5, color: pressed ? CL.accent : CL.subtle, textTransform: 'uppercase', fontWeight: 600 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function CLWaveform({ bars = 48, active = true, height = 40, color = CL.accent, amp = 1, style = {} }) {
+  const [t, setT] = React.useState(0);
+  React.useEffect(() => {
+    if (!active) return;
+    let raf; const start = performance.now();
+    const tick = (now) => { setT((now - start) / 1000); raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+  const items = Array.from({ length: bars }).map((_, i) => {
+    const phase = i * 0.35;
+    const v = active ? (Math.sin(t * 3 + phase) * 0.4 + Math.sin(t * 6.5 + phase * 1.3) * 0.3 + 0.6) : 0.08;
+    return Math.max(0.08, Math.min(1, v)) * amp;
+  });
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 3, height, ...style }}>
+      {items.map((v, i) => (
+        <div key={i} style={{
+          width: 2.5, height: `${v * 100}%`, background: color,
+          borderRadius: 2, transition: 'height 80ms linear', opacity: 0.7 + v * 0.3,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+
+/* ── Window Chrome ── */
+function LightTrafficLights({ style = {} }) {
+  const dot = (bg) => (
+    <div style={{
+      width: 12, height: 12, borderRadius: '50%', background: bg,
+      boxShadow: 'inset 0 0 0 0.5px rgba(0,0,0,0.18)',
+    }} />
+  );
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', ...style }}>
+      {dot('#ff5f57')}{dot('#febc2e')}{dot('#28c840')}
+    </div>
+  );
+}
+
+function CLWindow({ width = 720, height = 520, title, children, radius = 12, style = {} }) {
+  return (
+    <div style={{
+      width, height, borderRadius: radius, overflow: 'hidden',
+      background: CL.paper,
+      color: CL.ink,
+      boxShadow: '0 0 0 0.5px rgba(60,51,42,0.12), 0 30px 80px rgba(60,40,20,0.18), 0 8px 24px rgba(60,40,20,0.08)',
+      display: 'flex', flexDirection: 'column',
+      fontFamily: CL.fontSans,
+      position: 'relative',
+      ...style,
+    }}>
+      {/* Titlebar */}
+      <div style={{
+        height: 38, flexShrink: 0, display: 'flex', alignItems: 'center',
+        padding: '0 16px',
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.0))',
+        borderBottom: `0.5px solid ${CL.line}`,
+        position: 'relative', zIndex: 1,
+      }}>
+        <LightTrafficLights />
+        <div style={{
+          position: 'absolute', left: 0, right: 0, textAlign: 'center',
+          fontSize: 13, fontWeight: 500, color: CL.muted, pointerEvents: 'none',
+          fontFamily: CL.fontSans, letterSpacing: '-0.01em',
+        }}>{title}</div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+
+/* ── Onboarding Frame ── */
+function CLStepDots({ total, current }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      {Array.from({ length: total }).map((_, i) => (
+        <div key={i} style={{
+          width: i === current ? 18 : 6, height: 6, borderRadius: 3,
+          background: i === current ? CL.accent : 'rgba(60,51,42,0.18)',
+          transition: 'width 200ms ease, background 200ms ease',
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function CLOnboardFrame({ children, step = 0, totalSteps = 4, footer, width = 720, height = 520, chromeTitle = 'Open Flow' }) {
+  return (
+    <CLWindow width={width} height={height} title={chromeTitle} radius={12}>
+      <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <PaperGrain />
+        <div style={{
+          flex: 1, padding: '52px 60px', position: 'relative',
+          display: 'flex', flexDirection: 'column',
+          animation: 'fadeInUp 350ms ease-out',
+        }}>
+          {children}
+        </div>
+        <div style={{
+          height: 64, flexShrink: 0, borderTop: `0.5px solid ${CL.line}`,
+          padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'rgba(255,255,255,0.35)', position: 'relative', zIndex: 1,
+        }}>
+          <CLStepDots total={totalSteps} current={step} />
+          <div style={{ display: 'flex', gap: 8 }}>{footer}</div>
+        </div>
+      </div>
+    </CLWindow>
+  );
+}
+
+
+/* ── Step 0: Welcome — centered quiet ── */
+function CLWelcome({ onNext }) {
+  return (
+    <CLOnboardFrame step={0} chromeTitle="Welcome" footer={<>
+      <CLButton kind="ghost">Skip</CLButton>
+      <CLButton kind="primary" onClick={onNext}>Begin →</CLButton>
+    </>}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', position: 'relative' }}>
+        <div style={{ fontFamily: CL.fontHand, fontSize: 24, color: CL.accent, marginBottom: 14, transform: 'rotate(-1deg)' }}>
+          welcome in
+        </div>
+        <div style={{ fontFamily: CL.fontSerif, fontSize: 54, fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.02, color: CL.inkSoft, maxWidth: 520, position: 'relative' }}>
+          Dictate without<br/>
+          <span style={{ position: 'relative', display: 'inline-block' }}>
+            the cloud.
+            <HandCircle size={200} color={CL.accent} style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%) rotate(-2deg)', pointerEvents: 'none' }} />
+          </span>
+        </div>
+        <div style={{ fontSize: 15, lineHeight: 1.6, color: CL.muted, maxWidth: 420, marginTop: 28 }}>
+          Hold a key, talk, let go. Everything runs on your Mac — nothing leaves.
+        </div>
+      </div>
+    </CLOnboardFrame>
+  );
+}
+
+
+/* ── Step 1: Microphone Permission ── */
+function CLMicStep({ granted, onGrant, onNext, onBack }) {
+  return (
+    <CLOnboardFrame step={1} chromeTitle="Set up Open Flow" footer={<>
+      <CLButton kind="ghost" onClick={onBack}>Back</CLButton>
+      <CLButton kind="primary" onClick={onNext} disabled={!granted}>Continue</CLButton>
+    </>}>
+      <div style={{ maxWidth: 540 }}>
+        <div style={{ fontFamily: CL.fontHand, fontSize: 20, color: CL.accent, marginBottom: 6, transform: 'rotate(-1deg)', display: 'inline-block' }}>
+          step one
+        </div>
+        <div style={{ fontFamily: CL.fontSerif, fontSize: 34, fontWeight: 400, letterSpacing: '-0.02em', color: CL.inkSoft, marginBottom: 14 }}>
+          Can we use your microphone?
+        </div>
+        <div style={{ fontSize: 14.5, lineHeight: 1.6, color: CL.muted, marginBottom: 36 }}>
+          We only record while you're holding the hotkey. Audio is discarded the moment the transcript is ready — it never leaves your Mac.
+        </div>
+
+        <div style={{
+          background: CL.card, border: `0.5px solid ${CL.line}`,
+          borderRadius: 12, padding: 20,
+          display: 'flex', alignItems: 'center', gap: 16,
+          boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset',
+          transition: 'all 300ms ease',
+        }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 10,
+            background: granted ? 'rgba(94,138,78,0.14)' : CL.accentWash,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            border: `0.5px solid ${granted ? 'rgba(94,138,78,0.3)' : 'rgba(201,100,66,0.25)'}`,
+            transition: 'all 300ms ease',
+          }}>
+            {granted ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke={CL.good} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                <rect x="9" y="3" width="6" height="12" rx="3" stroke={CL.accent} strokeWidth="2" />
+                <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke={CL.accent} strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 500, color: CL.ink, marginBottom: 2 }}>Microphone access</div>
+            <div style={{ fontSize: 12.5, color: CL.muted, fontFamily: CL.fontMono }}>
+              {granted ? 'Granted — MacBook Pro Microphone' : 'Not granted yet'}
+            </div>
+          </div>
+          {granted ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: CL.good, fontWeight: 500 }}>
+              <CLDot color={CL.good} size={6} /> Ready
+            </div>
+          ) : (
+            <CLButton kind="secondary" size="sm" onClick={onGrant}>Open System Settings</CLButton>
+          )}
+        </div>
+
+        <div style={{ fontSize: 12.5, color: CL.subtle, marginTop: 16, fontFamily: CL.fontMono, lineHeight: 1.6 }}>
+          System Settings → Privacy &amp; Security → Microphone → Open Flow
+        </div>
+      </div>
+    </CLOnboardFrame>
+  );
+}
+
+
+/* ── Step 2: Hotkey Try-It ── */
+function CLHotkeyStep({ pressed, onPress, onRelease, hasTried, onNext, onBack }) {
+  return (
+    <CLOnboardFrame step={2} chromeTitle="Set up Open Flow" footer={<>
+      <CLButton kind="ghost" onClick={onBack}>Back</CLButton>
+      <CLButton kind="primary" onClick={onNext} disabled={!hasTried}>Continue</CLButton>
+    </>}>
+      <div style={{ display: 'flex', gap: 52, flex: 1, alignItems: 'center' }}>
+        <div style={{ flex: 1, maxWidth: 340 }}>
+          <div style={{ fontFamily: CL.fontHand, fontSize: 20, color: CL.accent, marginBottom: 6, transform: 'rotate(-1deg)', display: 'inline-block' }}>
+            step two
+          </div>
+          <div style={{ fontFamily: CL.fontSerif, fontSize: 34, fontWeight: 400, letterSpacing: '-0.02em', color: CL.inkSoft, marginBottom: 14 }}>
+            Try your hotkey.
+          </div>
+          <div style={{ fontSize: 14.5, lineHeight: 1.6, color: CL.muted, marginBottom: 22 }}>
+            Hold <span style={{ fontFamily: CL.fontMono, color: CL.inkSoft, background: CL.paperDeep, padding: '2px 8px', borderRadius: 5, border: `0.5px solid ${CL.line}` }}>Right ⌥</span> to start recording. Let go to transcribe.
+          </div>
+          <div style={{ fontSize: 12.5, color: CL.subtle, lineHeight: 1.7, fontFamily: CL.fontMono }}>
+            You can change this later in Settings.
+          </div>
+        </div>
+
+        <div
+          onMouseDown={onPress} onMouseUp={onRelease} onMouseLeave={() => { if (pressed) onRelease(); }}
+          style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, userSelect: 'none', cursor: 'pointer', position: 'relative' }}
+        >
+          {!pressed && !hasTried && (
+            <HandArrow size={56} color={CL.accent} direction="down" style={{ position: 'absolute', top: -66, left: '50%', transform: 'translateX(-50%) rotate(4deg)' }} />
+          )}
+          <CLKey label="⌥" sub="right option" size="xl" pressed={pressed} />
+          <div style={{
+            height: 36, display: 'flex', alignItems: 'center', gap: 12,
+            padding: '0 16px', borderRadius: 18,
+            background: pressed ? CL.accentWash : CL.card,
+            border: `0.5px solid ${pressed ? 'rgba(201,100,66,0.28)' : CL.line}`,
+            transition: 'all 150ms',
+          }}>
+            {pressed ? (
+              <>
+                <CLDot color={CL.danger} size={6} pulse />
+                <span style={{ fontSize: 12.5, color: CL.accentInk, fontFamily: CL.fontMono }}>recording…</span>
+                <CLWaveform bars={18} height={16} amp={0.5} color={CL.accent} />
+              </>
+            ) : hasTried ? (
+              <>
+                <CLDot color={CL.good} size={6} />
+                <span style={{ fontSize: 12.5, color: CL.good, fontFamily: CL.fontMono }}>nice — you've got it</span>
+              </>
+            ) : (
+              <span style={{ fontSize: 12.5, color: CL.subtle, fontFamily: CL.fontMono }}>press and hold</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </CLOnboardFrame>
+  );
+}
+
+
+/* ── Step 3: Done ── */
+function CLDoneStep({ onFinish, onBack }) {
+  return (
+    <CLOnboardFrame step={3} chromeTitle="All set" footer={<>
+      <CLButton kind="ghost" onClick={onBack}>Back</CLButton>
+      <CLButton kind="primary" onClick={onFinish}>Start dictating</CLButton>
+    </>}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', position: 'relative' }}>
+        <div style={{
+          width: 72, height: 72, borderRadius: 20,
+          background: `linear-gradient(135deg, ${CL.accent}, ${CL.accentDeep})`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 12px 40px rgba(201,100,66,0.3)',
+          marginBottom: 24,
+        }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </div>
+        <div style={{ fontFamily: CL.fontHand, fontSize: 22, color: CL.accent, marginBottom: 8, transform: 'rotate(-1deg)' }}>
+          that's it!
+        </div>
+        <div style={{ fontFamily: CL.fontSerif, fontSize: 38, fontWeight: 400, letterSpacing: '-0.02em', color: CL.inkSoft, marginBottom: 14 }}>
+          You're ready.
+        </div>
+        <div style={{ fontSize: 14.5, lineHeight: 1.6, color: CL.muted, maxWidth: 400, marginBottom: 32 }}>
+          Open Flow lives in your menu bar. Hold <span style={{ fontFamily: CL.fontMono, color: CL.inkSoft }}>Right ⌥</span> in any app and start talking.
+        </div>
+        <div style={{
+          display: 'flex', gap: 20, padding: '14px 22px',
+          background: CL.card, border: `0.5px solid ${CL.line}`, borderRadius: 12,
+          fontFamily: CL.fontMono, fontSize: 11.5, color: CL.muted,
+          boxShadow: '0 1px 0 rgba(255,255,255,0.6) inset',
+        }}>
+          <div><span style={{ color: CL.accent }}>◉</span> menu-bar · always there</div>
+          <div style={{ width: 1, background: CL.line }} />
+          <div><span style={{ color: CL.accent }}>⎇</span> right option · hold to record</div>
+        </div>
+      </div>
+    </CLOnboardFrame>
+  );
+}
+
+
+/* ── Full Onboarding Flow ── */
+function CLOnboardingFlow() {
+  const [step, setStep] = React.useState(0);
+  const [granted, setGranted] = React.useState(false);
+  const [pressed, setPressed] = React.useState(false);
+  const [hasTried, setHasTried] = React.useState(false);
+
+  const next = () => setStep(s => Math.min(3, s + 1));
+  const back = () => setStep(s => Math.max(0, s - 1));
+
+  if (step === 0) return <CLWelcome onNext={next} />;
+  if (step === 1) return (
+    <CLMicStep
+      granted={granted}
+      onGrant={() => setGranted(true)}
+      onNext={next}
+      onBack={back}
+    />
+  );
+  if (step === 2) return (
+    <CLHotkeyStep
+      pressed={pressed}
+      onPress={() => setPressed(true)}
+      onRelease={() => { setPressed(false); setHasTried(true); }}
+      hasTried={hasTried}
+      onNext={next}
+      onBack={back}
+    />
+  );
+  return <CLDoneStep onFinish={() => { setStep(0); setGranted(false); setHasTried(false); }} onBack={back} />;
+}
+
+
+/* ── Mount ── */
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<CLOnboardingFlow />);
+
+</script>
+</body>
+</html>

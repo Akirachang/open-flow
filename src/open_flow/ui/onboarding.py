@@ -1,95 +1,116 @@
-"""Step-by-step onboarding wizard — shown on first run only."""
+"""First-run onboarding wizard — single-page WKWebView UI.
+
+All four steps (welcome → microphone → hotkey → done) live in
+`resources/welcome.html`. The Python side owns:
+  - window lifecycle
+  - microphone permission polling
+  - background model download
+  - JS ↔ Python bridge (WKUserContentController + evaluateJavaScript:)
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import threading
+from pathlib import Path
 from typing import Callable
 
 import objc
 from AppKit import (
+    NSApplication,
     NSBackingStoreBuffered,
-    NSBezelStyleRounded,
-    NSButton,
-    NSCenterTextAlignment,
-    NSColor,
-    NSFont,
-    NSLeftTextAlignment,
     NSMakeRect,
-    NSMomentaryLightButton,
-    NSProgressIndicator,
     NSScreen,
-    NSTextField,
-    NSView,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
-    NSApplication,
 )
-from Foundation import NSObject
+from Foundation import NSURL, NSObject
+from PyObjCTools import AppHelper
+from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
 logger = logging.getLogger(__name__)
 
 
-def _open_privacy_pane(pane: str) -> None:
-    """Open a specific Privacy & Security pane in System Settings.
+# ------------------------------------------------------------------ #
+# Constants
+# ------------------------------------------------------------------ #
 
-    Uses Popen so the button handler returns immediately — blocking calls
-    freeze the UI thread and make the button appear stuck.
-    """
+_W = 720
+_H = 520
+
+_WELCOME_HTML = Path(__file__).resolve().parent.parent / "resources" / "welcome.html"
+
+# System Settings pane slugs
+_PRIVACY_PANES = {
+    "mic": "Privacy_Microphone",
+    "accessibility": "Privacy_Accessibility",
+    "input_monitoring": "Privacy_ListenEvent",
+}
+
+
+def _open_privacy_pane(key: str) -> None:
+    pane = _PRIVACY_PANES.get(key)
+    if not pane:
+        logger.warning("Unknown privacy pane: %s", key)
+        return
     url = f"x-apple.systempreferences:com.apple.preference.security?{pane}"
     logger.info("Opening privacy pane: %s", pane)
     try:
-        subprocess.Popen(
-            ["open", url],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        subprocess.Popen(["open", url],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
     except Exception as exc:
         logger.error("Failed to open privacy pane %s: %s", pane, exc)
 
 
-_W = 520
-_H = 440
-_PADDING = 40
+def _check_mic_permission() -> bool:
+    """Return True if the process has microphone access.
+
+    Uses AVCaptureDevice authorizationStatus — returns 3 when granted.
+    """
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
+        return int(status) == 3  # AVAuthorizationStatusAuthorized
+    except Exception as exc:
+        logger.debug("Mic permission check unavailable: %s", exc)
+        return False
 
 
 # ------------------------------------------------------------------ #
-# Single module-level delegate class — avoids PyObjC class redefinition
+# JS bridge delegate
 # ------------------------------------------------------------------ #
 
-class _ButtonDelegate(NSObject):
-    def initWithCallbacks_(self, callbacks: dict) -> "_ButtonDelegate":
-        self = objc.super(_ButtonDelegate, self).init()
-        self._callbacks = callbacks
+class _WebMessageHandler(NSObject):
+    """Routes `window.webkit.messageHandlers.openflow.postMessage(...)` calls."""
+
+    def initWithCallback_(self, cb: Callable[[str, object], None]) -> "_WebMessageHandler":
+        self = objc.super(_WebMessageHandler, self).init()
+        self._cb = cb
         return self
 
-    def handleButton_(self, sender: NSButton) -> None:
-        tag = sender.tag()
-        fn = self._callbacks.get(tag)
-        if fn:
-            fn()
-
-
-# ------------------------------------------------------------------ #
-# Helpers
-# ------------------------------------------------------------------ #
-
-def _label(text: str, x: float, y: float, w: float, h: float,
-           size: float = 13, bold: bool = False,
-           color: NSColor | None = None,
-           align: int = NSCenterTextAlignment) -> NSTextField:
-    f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
-    f.setStringValue_(text)
-    f.setBezeled_(False)
-    f.setDrawsBackground_(False)
-    f.setEditable_(False)
-    f.setSelectable_(False)
-    f.setAlignment_(align)
-    f.setFont_(NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size))
-    f.setTextColor_(color or NSColor.labelColor())
-    return f
+    def userContentController_didReceiveScriptMessage_(self, _controller, message) -> None:
+        try:
+            body = message.body()
+        except Exception:
+            return
+        # body is typically a dict {name, payload} but tolerate a bare string.
+        if isinstance(body, str):
+            name, payload = body, None
+        else:
+            try:
+                name = str(body["name"])
+                payload = body.get("payload") if hasattr(body, "get") else None
+            except Exception:
+                logger.warning("Unparseable web message: %r", body)
+                return
+        try:
+            self._cb(name, payload)
+        except Exception:
+            logger.exception("Error handling web message %s", name)
 
 
 # ------------------------------------------------------------------ #
@@ -97,20 +118,15 @@ def _label(text: str, x: float, y: float, w: float, h: float,
 # ------------------------------------------------------------------ #
 
 class OnboardingWizard:
-    STEPS = ["welcome", "permissions", "models", "hotkey"]
-
     def __init__(self, cfg, on_complete: Callable[[], None]) -> None:
         self._cfg = cfg
         self._on_complete = on_complete
-        self._step_index = 0
         self._window: NSWindow | None = None
-        self._delegate: _ButtonDelegate | None = None
-        self._callbacks: dict[int, Callable[[], None]] = {}
-        self._btn_tag = 0
-        self._progress_bars: list[NSProgressIndicator] = []
-        self._status_labels: list[NSTextField] = []
-        self._next_btn: NSButton | None = None
-        self._download_btn: NSButton | None = None
+        self._web: WKWebView | None = None
+        self._handler: _WebMessageHandler | None = None
+        self._poll_stop = threading.Event()
+        self._download_thread: threading.Thread | None = None
+        self._ready = False
 
     # ------------------------------------------------------------------ #
     # Public                                                               #
@@ -118,12 +134,13 @@ class OnboardingWizard:
 
     def run(self) -> None:
         self._build_window()
-        self._show_step(0)
         self._window.makeKeyAndOrderFront_(None)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self._start_permission_poll()
+        self._start_background_download()
 
     # ------------------------------------------------------------------ #
-    # Internal — window + step management                                 #
+    # Window + web view                                                    #
     # ------------------------------------------------------------------ #
 
     def _build_window(self) -> None:
@@ -138,177 +155,135 @@ class OnboardingWizard:
             NSBackingStoreBuffered,
             False,
         )
-        self._window.setTitle_("Welcome to Open Flow")
+        self._window.setTitle_("Open Flow")
         self._window.setReleasedWhenClosed_(False)
 
-        # One shared delegate for all button callbacks
-        self._callbacks = {}
-        self._delegate = _ButtonDelegate.alloc().initWithCallbacks_(self._callbacks)
+        self._handler = _WebMessageHandler.alloc().initWithCallback_(self._on_web_message)
+        controller = WKUserContentController.alloc().init()
+        controller.addScriptMessageHandler_name_(self._handler, "openflow")
 
-    def _clear(self) -> None:
-        for sub in list(self._window.contentView().subviews()):
-            sub.removeFromSuperview()
-        self._callbacks.clear()
-        self._btn_tag = 0
+        config = WKWebViewConfiguration.alloc().init()
+        config.setUserContentController_(controller)
 
-    def _show_step(self, index: int) -> None:
-        self._step_index = index
-        self._clear()
-        getattr(self, f"_step_{self.STEPS[index]}")()
+        content = self._window.contentView()
+        self._web = WKWebView.alloc().initWithFrame_configuration_(
+            content.bounds(), config
+        )
+        self._web.setAutoresizingMask_(2 | 16)  # width + height resizable
 
-    def _next(self) -> None:
-        if self._step_index + 1 < len(self.STEPS):
-            self._show_step(self._step_index + 1)
-        else:
+        try:
+            html = _WELCOME_HTML.read_text(encoding="utf-8")
+            base_url = NSURL.fileURLWithPath_(str(_WELCOME_HTML.parent))
+            self._web.loadHTMLString_baseURL_(html, base_url)
+        except OSError as exc:
+            logger.error("Failed to load wizard HTML: %s", exc)
             self._finish()
+            return
 
-    def _back(self) -> None:
-        if self._step_index > 0:
-            self._show_step(self._step_index - 1)
-
-    def _add(self, view: NSView) -> NSView:
-        self._window.contentView().addSubview_(view)
-        return view
-
-    def _btn(self, title: str, x: float, y: float, w: float, h: float,
-             action: Callable[[], None]) -> NSButton:
-        tag = self._btn_tag
-        self._btn_tag += 1
-        self._callbacks[tag] = action
-
-        btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
-        btn.setTitle_(title)
-        btn.setBezelStyle_(NSBezelStyleRounded)
-        btn.setButtonType_(NSMomentaryLightButton)
-        btn.setTag_(tag)
-        btn.setTarget_(self._delegate)
-        btn.setAction_("handleButton:")
-        return btn
+        content.addSubview_(self._web)
 
     # ------------------------------------------------------------------ #
-    # Step: Welcome                                                        #
+    # JS bridge — inbound                                                  #
     # ------------------------------------------------------------------ #
 
-    def _step_welcome(self) -> None:
-        cx = _W / 2
-        self._add(_label("🎙️", cx - 36, _H - 110, 72, 72, size=52))
-        self._add(_label("Open Flow", cx - 160, _H - 160, 320, 40,
-                         size=28, bold=True))
-        self._add(_label(
-            "Offline push-to-talk voice dictation for macOS.\n"
-            "Hold a hotkey, speak, release — text appears wherever your cursor is.",
-            _PADDING, _H - 240, _W - _PADDING * 2, 60, size=14,
-        ))
-        self._add(_label(
-            "Everything runs locally on your Mac.\nNo cloud. No subscription. No data leaves your machine.",
-            _PADDING, _H - 310, _W - _PADDING * 2, 50, size=13,
-            color=NSColor.secondaryLabelColor(),
-        ))
-        self._add(self._btn("Get Started →", _W - 180 - _PADDING, 24, 180, 32, self._next))
+    def _on_web_message(self, name: str, payload: object) -> None:
+        logger.debug("web msg: %s %r", name, payload)
+        if name == "ready":
+            self._ready = True
+            self._push_state({"micGranted": _check_mic_permission()})
+        elif name == "open_settings":
+            _open_privacy_pane(str(payload) if payload else "mic")
+        elif name == "step":
+            # Purely informational — JS owns the current step.
+            pass
+        elif name == "skip" or name == "finish":
+            self._finish()
+        else:
+            logger.debug("Unhandled web message: %s", name)
 
     # ------------------------------------------------------------------ #
-    # Step: Permissions                                                    #
+    # JS bridge — outbound                                                 #
     # ------------------------------------------------------------------ #
 
-    def _step_permissions(self) -> None:
-        self._add(_label("Permissions", _PADDING, _H - 65,
-                         _W - _PADDING * 2, 34, size=22, bold=True,
-                         align=NSLeftTextAlignment))
-        self._add(_label(
-            "Open Flow needs three permissions. Click each button,\ngrant access in System Settings, then return here.",
-            _PADDING, _H - 115, _W - _PADDING * 2, 40, size=13,
-            align=NSLeftTextAlignment, color=NSColor.secondaryLabelColor(),
-        ))
-
-        perms = [
-            ("🎙️  Microphone",
-             "Record your voice",
-             "Privacy_Microphone"),
-            ("⌨️  Input Monitoring",
-             "Global hotkey detection",
-             "Privacy_ListenEvent"),
-            ("♿  Accessibility",
-             "Inject text into other apps",
-             "Privacy_Accessibility"),
-        ]
-
-        for i, (title, desc, pane) in enumerate(perms):
-            row_y = _H - 185 - i * 68
-            self._add(_label(title, _PADDING, row_y + 18, 260, 20,
-                             size=13, bold=True, align=NSLeftTextAlignment))
-            self._add(_label(desc, _PADDING, row_y, 260, 16,
-                             size=11, align=NSLeftTextAlignment,
-                             color=NSColor.secondaryLabelColor()))
-            captured = pane
-            self._add(self._btn("Open Settings", _W - _PADDING - 130, row_y + 8, 130, 26,
-                                lambda p=captured: _open_privacy_pane(p)))
-
-        self._add(self._btn("← Back", _PADDING, 24, 100, 32, self._back))
-        self._add(self._btn("Continue →", _W - 180 - _PADDING, 24, 180, 32, self._next))
+    def _push_state(self, patch: dict) -> None:
+        """Call `window.openflow.setState(patch)` in the web view."""
+        if self._web is None:
+            return
+        js = f"window.openflow && window.openflow.setState({json.dumps(patch)});"
+        def _run() -> None:
+            self._web.evaluateJavaScript_completionHandler_(js, None)
+        AppHelper.callAfter(_run)
 
     # ------------------------------------------------------------------ #
-    # Step: Models                                                         #
+    # Permission polling                                                   #
     # ------------------------------------------------------------------ #
 
-    def _step_models(self) -> None:
-        self._progress_bars = []
-        self._status_labels = []
+    def _start_permission_poll(self) -> None:
+        """Poll mic permission every 500ms and push updates to JS."""
+        last = {"mic": None}
 
-        self._add(_label("Download Models", _PADDING, _H - 65,
-                         _W - _PADDING * 2, 34, size=22, bold=True,
-                         align=NSLeftTextAlignment))
-        self._add(_label(
-            "Two local AI models are needed (~3.5 GB total).\nDownloaded once, stored on your Mac.",
-            _PADDING, _H - 115, _W - _PADDING * 2, 40, size=13,
-            align=NSLeftTextAlignment, color=NSColor.secondaryLabelColor(),
-        ))
+        def tick() -> None:
+            if self._poll_stop.is_set():
+                return
+            granted = _check_mic_permission()
+            if granted != last["mic"]:
+                last["mic"] = granted
+                if self._ready:
+                    self._push_state({"micGranted": bool(granted)})
 
-        models = [
-            ("Whisper distil-large-v3", "~1.5 GB  ·  speech-to-text",
-             self._cfg.whisper_model_path),
-            ("Qwen2.5-3B-Instruct Q4", "~2.0 GB  ·  text cleanup",
-             self._cfg.llm_model_path),
-        ]
+        def loop() -> None:
+            while not self._poll_stop.is_set():
+                AppHelper.callAfter(tick)
+                self._poll_stop.wait(0.5)
 
-        for i, (name, size_str, path) in enumerate(models):
-            row_y = _H - 210 - i * 90
-            self._add(_label(name, _PADDING, row_y + 36, _W - _PADDING * 2, 20,
-                             size=13, bold=True, align=NSLeftTextAlignment))
-            self._add(_label(size_str, _PADDING, row_y + 18, 300, 16,
-                             size=11, align=NSLeftTextAlignment,
-                             color=NSColor.secondaryLabelColor()))
+        threading.Thread(target=loop, daemon=True, name="of-perm-poll").start()
 
-            bar = NSProgressIndicator.alloc().initWithFrame_(
-                NSMakeRect(_PADDING, row_y, _W - _PADDING * 2 - 90, 10)
-            )
-            bar.setStyle_(1)
-            bar.setIndeterminate_(False)
-            bar.setMinValue_(0)
-            bar.setMaxValue_(100)
-            bar.setDoubleValue_(100.0 if path.exists() else 0.0)
-            self._add(bar)
-            self._progress_bars.append(bar)
+    # ------------------------------------------------------------------ #
+    # Background model download                                            #
+    # ------------------------------------------------------------------ #
 
-            status_text = "✓ Ready" if path.exists() else "Waiting…"
-            sl = _label(status_text, _W - _PADDING - 80, row_y, 80, 16,
-                        size=11, color=NSColor.secondaryLabelColor(),
-                        align=NSLeftTextAlignment)
-            self._add(sl)
-            self._status_labels.append(sl)
+    def _start_background_download(self) -> None:
+        """Kick off model downloads if missing — runs silently while wizard is up.
 
-        self._download_btn = self._btn(
-            "Download Models", _PADDING, 24, 170, 32, self._start_download
+        If they're not ready by the time the user hits Start, the tray app
+        surfaces a notification separately.
+        """
+        if self._models_ready():
+            return
+
+        def worker() -> None:
+            try:
+                from huggingface_hub import hf_hub_download, snapshot_download
+            except Exception as exc:
+                logger.error("huggingface_hub unavailable: %s", exc)
+                return
+
+            tasks = [
+                ("Systran/faster-distil-whisper-large-v3",
+                 self._cfg.whisper_model_path, None),
+                ("Qwen/Qwen2.5-3B-Instruct-GGUF",
+                 self._cfg.llm_model_path.parent,
+                 "qwen2.5-3b-instruct-q4_k_m.gguf"),
+            ]
+            for repo, dest, filename in tasks:
+                target = dest if filename is None else dest / filename
+                if target.exists():
+                    continue
+                try:
+                    if filename is None:
+                        snapshot_download(repo_id=repo, local_dir=str(dest),
+                                          local_dir_use_symlinks=False)
+                    else:
+                        hf_hub_download(repo_id=repo, filename=filename,
+                                        local_dir=str(dest))
+                except Exception as exc:
+                    logger.error("Model download failed (%s): %s", repo, exc)
+                    return
+
+        self._download_thread = threading.Thread(
+            target=worker, daemon=True, name="of-model-download"
         )
-        self._download_btn.setEnabled_(not self._models_ready())
-        self._add(self._download_btn)
-
-        self._add(self._btn("← Back", _W // 2 - 50, 24, 100, 32, self._back))
-
-        self._next_btn = self._btn(
-            "Continue →", _W - 180 - _PADDING, 24, 180, 32, self._next
-        )
-        self._next_btn.setEnabled_(self._models_ready())
-        self._add(self._next_btn)
+        self._download_thread.start()
 
     def _models_ready(self) -> bool:
         return (
@@ -316,95 +291,12 @@ class OnboardingWizard:
             and self._cfg.llm_model_path.exists()
         )
 
-    def _start_download(self) -> None:
-        if self._download_btn:
-            self._download_btn.setEnabled_(False)
-        threading.Thread(target=self._download_models, daemon=True).start()
-
-    def _download_models(self) -> None:
-        from huggingface_hub import snapshot_download, hf_hub_download
-        from PyObjCTools import AppHelper
-
-        tasks = [
-            ("Systran/faster-distil-whisper-large-v3",
-             self._cfg.whisper_model_path, None, 0),
-            ("Qwen/Qwen2.5-3B-Instruct-GGUF",
-             self._cfg.llm_model_path.parent,
-             "qwen2.5-3b-instruct-q4_k_m.gguf", 1),
-        ]
-
-        for repo, dest, filename, idx in tasks:
-            target = dest if filename is None else dest / filename
-            if target.exists():
-                self._set_progress(idx, 100, "✓ Ready")
-                continue
-            self._set_progress(idx, 2, "Downloading…")
-            try:
-                if filename is None:
-                    snapshot_download(repo_id=repo, local_dir=str(dest),
-                                      local_dir_use_symlinks=False)
-                else:
-                    hf_hub_download(repo_id=repo, filename=filename,
-                                    local_dir=str(dest))
-                self._set_progress(idx, 100, "✓ Done")
-            except Exception as exc:
-                self._set_progress(idx, 0, "Error")
-                logger.error("Download failed: %s", exc)
-                return
-
-        def _enable() -> None:
-            if self._next_btn:
-                self._next_btn.setEnabled_(True)
-        AppHelper.callAfter(_enable)
-
-    def _set_progress(self, idx: int, value: float, status: str) -> None:
-        from PyObjCTools import AppHelper
-        def _do() -> None:
-            if idx < len(self._progress_bars):
-                self._progress_bars[idx].setDoubleValue_(value)
-            if idx < len(self._status_labels):
-                self._status_labels[idx].setStringValue_(status)
-        AppHelper.callAfter(_do)
-
-    # ------------------------------------------------------------------ #
-    # Step: Hotkey                                                         #
-    # ------------------------------------------------------------------ #
-
-    def _step_hotkey(self) -> None:
-        cx = _W / 2
-        self._add(_label("You're all set!", cx - 160, _H - 90, 320, 40,
-                         size=26, bold=True))
-        self._add(_label("Here's how to use Open Flow:",
-                         _PADDING, _H - 148, _W - _PADDING * 2, 26, size=15))
-
-        steps = [
-            ("1", "Click into any text field in any app."),
-            ("2", f"Hold  {self._cfg.hotkey.replace('_', ' ').title()}  and speak."),
-            ("3", "Release — your words appear instantly."),
-        ]
-        for i, (num, text) in enumerate(steps):
-            row_y = _H - 220 - i * 60
-            self._add(_label(num, _PADDING, row_y, 28, 28,
-                             size=16, bold=True,
-                             color=NSColor.systemBlueColor()))
-            self._add(_label(text, _PADDING + 36, row_y,
-                             _W - _PADDING * 2 - 36, 28,
-                             size=14, align=NSLeftTextAlignment))
-
-        self._add(_label(
-            "Change the hotkey anytime from the  ◉  menu-bar icon → Preferences.",
-            _PADDING, _H - 370, _W - _PADDING * 2, 20, size=12,
-            color=NSColor.secondaryLabelColor(),
-        ))
-
-        self._add(self._btn("← Back", _PADDING, 24, 100, 32, self._back))
-        self._add(self._btn("Start Dictating →", _W - 200 - _PADDING, 24, 200, 32,
-                            self._finish))
-
     # ------------------------------------------------------------------ #
     # Finish                                                               #
     # ------------------------------------------------------------------ #
 
     def _finish(self) -> None:
-        self._window.orderOut_(None)
+        self._poll_stop.set()
+        if self._window is not None:
+            self._window.orderOut_(None)
         self._on_complete()
