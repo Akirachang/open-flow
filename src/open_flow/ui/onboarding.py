@@ -43,10 +43,10 @@ _H = 520
 
 _WELCOME_HTML = Path(__file__).resolve().parent.parent / "resources" / "welcome.html"
 
-# System Settings pane slugs
+# System Settings pane slugs — keyed by the short names the JS sends.
 _PRIVACY_PANES = {
     "mic": "Privacy_Microphone",
-    "accessibility": "Privacy_Accessibility",
+    "ax": "Privacy_Accessibility",
     "input_monitoring": "Privacy_ListenEvent",
 }
 
@@ -66,23 +66,120 @@ def _open_privacy_pane(key: str) -> None:
         logger.error("Failed to open privacy pane %s: %s", pane, exc)
 
 
-def _check_mic_permission() -> bool:
-    """Return True if the process has microphone access.
+_AV_STATUS_NOT_DETERMINED = 0
+_AV_STATUS_AUTHORIZED = 3
 
-    Uses AVCaptureDevice authorizationStatus — returns 3 when granted.
+
+def _mic_auth_status() -> int:
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        return int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception as exc:
+        logger.debug("Mic permission check unavailable: %s", exc)
+        return -1
+
+
+def _check_mic_permission() -> bool:
+    return _mic_auth_status() == _AV_STATUS_AUTHORIZED
+
+
+def _request_mic_permission(on_result: Callable[[bool], None]) -> None:
+    """Trigger the native mic permission prompt.
+
+    If status is already determined (granted or denied), this returns the
+    current answer asynchronously without showing a dialog. A denied-then-
+    reset grant requires the user to toggle the Privacy pane — we open it
+    for them in the denied branch.
     """
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
-        status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
-        return int(status) == 3  # AVAuthorizationStatusAuthorized
     except Exception as exc:
-        logger.debug("Mic permission check unavailable: %s", exc)
+        logger.debug("AVFoundation unavailable: %s", exc)
+        on_result(False)
+        return
+
+    status = _mic_auth_status()
+    if status == _AV_STATUS_AUTHORIZED:
+        on_result(True)
+        return
+    if status not in (_AV_STATUS_NOT_DETERMINED, -1):
+        # Denied or restricted — the prompt won't appear again.
+        # Open the Privacy pane so the user can flip the toggle.
+        _open_privacy_pane("mic")
+        on_result(False)
+        return
+
+    def completion(granted: bool) -> None:
+        on_result(bool(granted))
+
+    AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+        AVMediaTypeAudio, completion
+    )
+
+
+def _check_accessibility() -> bool:
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+        return bool(AXIsProcessTrusted())
+    except Exception as exc:
+        logger.debug("AX permission check unavailable: %s", exc)
         return False
+
+
+def _request_accessibility() -> bool:
+    """Trigger the native Accessibility sheet via AXIsProcessTrustedWithOptions.
+
+    The sheet appears only when status is 'not determined'. If the user
+    previously denied, we fall back to opening the Privacy pane so they can
+    toggle the switch manually. Returns the *current* trusted value (not the
+    post-prompt one — the sheet is async).
+    """
+    try:
+        from ApplicationServices import (
+            AXIsProcessTrusted,
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+    except Exception as exc:
+        logger.debug("AX APIs unavailable: %s", exc)
+        _open_privacy_pane("ax")
+        return False
+
+    if AXIsProcessTrusted():
+        return True
+
+    # Show the system sheet. If a prior denial means the sheet won't appear,
+    # also nudge the user toward the Privacy pane.
+    try:
+        options = {kAXTrustedCheckOptionPrompt: True}
+        trusted = bool(AXIsProcessTrustedWithOptions(options))
+    except Exception as exc:
+        logger.debug("AXIsProcessTrustedWithOptions failed: %s", exc)
+        trusted = False
+
+    if not trusted:
+        _open_privacy_pane("ax")
+    return trusted
 
 
 # ------------------------------------------------------------------ #
 # JS bridge delegate
 # ------------------------------------------------------------------ #
+
+class _WindowCloseDelegate(NSObject):
+    """Treats closing the wizard window as finishing onboarding."""
+
+    def initWithCallback_(self, cb: Callable[[], None]) -> "_WindowCloseDelegate":
+        self = objc.super(_WindowCloseDelegate, self).init()
+        self._cb = cb
+        return self
+
+    def windowWillClose_(self, _notification) -> None:
+        try:
+            self._cb()
+        except Exception:
+            logger.exception("Error in window close callback")
+
 
 class _WebMessageHandler(NSObject):
     """Routes `window.webkit.messageHandlers.openflow.postMessage(...)` calls."""
@@ -127,6 +224,8 @@ class OnboardingWizard:
         self._poll_stop = threading.Event()
         self._download_thread: threading.Thread | None = None
         self._ready = False
+        self._finished = False
+        self._close_delegate: _WindowCloseDelegate | None = None
 
     # ------------------------------------------------------------------ #
     # Public                                                               #
@@ -136,6 +235,9 @@ class OnboardingWizard:
         self._build_window()
         self._window.makeKeyAndOrderFront_(None)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        # The web view must be first responder or JS keydown/keyup never fires.
+        if self._web is not None:
+            self._window.makeFirstResponder_(self._web)
         self._start_permission_poll()
         self._start_background_download()
 
@@ -157,6 +259,13 @@ class OnboardingWizard:
         )
         self._window.setTitle_("Open Flow")
         self._window.setReleasedWhenClosed_(False)
+
+        # Closing the window (red traffic light) should count as finishing —
+        # otherwise the user re-enters the wizard on every launch.
+        self._close_delegate = _WindowCloseDelegate.alloc().initWithCallback_(
+            self._finish
+        )
+        self._window.setDelegate_(self._close_delegate)
 
         self._handler = _WebMessageHandler.alloc().initWithCallback_(self._on_web_message)
         controller = WKUserContentController.alloc().init()
@@ -190,9 +299,23 @@ class OnboardingWizard:
         logger.debug("web msg: %s %r", name, payload)
         if name == "ready":
             self._ready = True
-            self._push_state({"micGranted": _check_mic_permission()})
+            self._push_state({
+                "micGranted": _check_mic_permission(),
+                "axGranted": _check_accessibility(),
+            })
         elif name == "open_settings":
-            _open_privacy_pane(str(payload) if payload else "mic")
+            key = str(payload) if payload else "mic"
+            if key == "mic":
+                def _after(granted: bool) -> None:
+                    if self._ready:
+                        self._push_state({"micGranted": bool(granted)})
+                _request_mic_permission(_after)
+            elif key == "ax":
+                trusted = _request_accessibility()
+                if self._ready:
+                    self._push_state({"axGranted": bool(trusted)})
+            else:
+                _open_privacy_pane(key)
         elif name == "step":
             # Purely informational — JS owns the current step.
             pass
@@ -219,17 +342,23 @@ class OnboardingWizard:
     # ------------------------------------------------------------------ #
 
     def _start_permission_poll(self) -> None:
-        """Poll mic permission every 500ms and push updates to JS."""
-        last = {"mic": None}
+        """Poll mic + AX every 500ms and push diffs to JS."""
+        last = {"mic": None, "ax": None}
 
         def tick() -> None:
             if self._poll_stop.is_set():
                 return
-            granted = _check_mic_permission()
-            if granted != last["mic"]:
-                last["mic"] = granted
-                if self._ready:
-                    self._push_state({"micGranted": bool(granted)})
+            patch: dict = {}
+            mic = _check_mic_permission()
+            if mic != last["mic"]:
+                last["mic"] = mic
+                patch["micGranted"] = bool(mic)
+            ax = _check_accessibility()
+            if ax != last["ax"]:
+                last["ax"] = ax
+                patch["axGranted"] = bool(ax)
+            if patch and self._ready:
+                self._push_state(patch)
 
         def loop() -> None:
             while not self._poll_stop.is_set():
@@ -296,7 +425,12 @@ class OnboardingWizard:
     # ------------------------------------------------------------------ #
 
     def _finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
         self._poll_stop.set()
         if self._window is not None:
+            # Detach the delegate first so orderOut_ doesn't re-enter _finish.
+            self._window.setDelegate_(None)
             self._window.orderOut_(None)
         self._on_complete()

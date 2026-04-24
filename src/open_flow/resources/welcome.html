@@ -393,13 +393,13 @@
     </div>
   </div>
 
-  <!-- ─────────── Step 1: Microphone permission ─────────── -->
+  <!-- ─────────── Step 1: Permissions ─────────── -->
   <div class="step body" data-step="1">
-    <div style="max-width:540px;">
+    <div style="max-width:560px;">
       <div class="kicker">step one</div>
-      <div class="headline lg">Can we use your microphone?</div>
-      <div class="tagline" style="margin-bottom:28px;">
-        We only record while you're holding the hotkey. Audio is discarded the moment the transcript is ready — it never leaves your Mac.
+      <div class="headline lg">Two quick permissions.</div>
+      <div class="tagline" style="margin-bottom:24px;">
+        Open Flow needs your microphone to hear you, and accessibility to hear the hotkey and paste the transcript into the focused app.
       </div>
 
       <div id="perm-mic" class="perm-row">
@@ -410,14 +410,28 @@
           </svg>
         </div>
         <div class="perm-body">
-          <div class="perm-title">Microphone access</div>
-          <div class="perm-sub">Not granted yet</div>
+          <div class="perm-title">Microphone</div>
+          <div class="perm-sub">Record your voice while holding the hotkey</div>
         </div>
-        <button class="secondary" data-perm-open="mic">Open System Settings</button>
+        <button class="secondary" data-perm-open="mic">Grant</button>
+      </div>
+
+      <div id="perm-ax" class="perm-row">
+        <div class="perm-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="5" r="2" stroke="var(--accent)" stroke-width="2"/>
+            <path d="M4 9h16M10 21v-7M14 21v-7M12 14v-5" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="perm-body">
+          <div class="perm-title">Accessibility</div>
+          <div class="perm-sub">Listen for the hotkey and paste transcribed text</div>
+        </div>
+        <button class="secondary" data-perm-open="ax">Grant</button>
       </div>
 
       <div class="footnote" style="margin-top:14px;">
-        System Settings → Privacy &amp; Security → Microphone → Open Flow
+        Accessibility is the one that lets us type for you. Nothing is ever sent off your Mac.
       </div>
     </div>
   </div>
@@ -491,6 +505,7 @@
   const state = {
     step: 0,
     micGranted: false,
+    axGranted: false,
     pressed: false,
     hasTried: false,
   };
@@ -532,7 +547,8 @@
       addBtn("primary", "Begin →", { onClick: next });
     } else if (state.step === 1) {
       addBtn("ghost", "Back", { onClick: back });
-      addBtn("primary", "Continue", { disabled: !state.micGranted, onClick: next });
+      const ready = state.micGranted && state.axGranted;
+      addBtn("primary", "Continue", { disabled: !ready, onClick: next });
     } else if (state.step === 2) {
       addBtn("ghost", "Back", { onClick: back });
       addBtn("primary", "Continue", { disabled: !state.hasTried, onClick: next });
@@ -553,41 +569,56 @@
     renderStep();
   }
 
-  // ---------- Mic step ----------
+  // ---------- Permission rows (mic + accessibility) ----------
 
-  const micRow = document.getElementById("perm-mic");
-  function renderMic() {
-    const granted = state.micGranted;
-    const iconEl = micRow.querySelector(".perm-icon");
-    const subEl = micRow.querySelector(".perm-sub");
-    const btn = micRow.querySelector("[data-perm-open]");
+  const PERM_ICONS = {
+    mic: {
+      idle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="9" y="3" width="6" height="12" rx="3" stroke="var(--accent)" stroke-width="2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg>',
+      sub: "Record your voice while holding the hotkey",
+    },
+    ax: {
+      idle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2" stroke="var(--accent)" stroke-width="2"/><path d="M4 9h16M10 21v-7M14 21v-7M12 14v-5" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg>',
+      sub: "Listen for the hotkey and paste transcribed text",
+    },
+  };
+  const CHECK_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="var(--good)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function renderPermRow(key, granted) {
+    const row = document.getElementById("perm-" + key);
+    if (!row) return;
+    const iconEl = row.querySelector(".perm-icon");
+    const subEl = row.querySelector(".perm-sub");
 
     iconEl.classList.toggle("granted", granted);
-    iconEl.innerHTML = granted
-      ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="var(--good)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-      : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="9" y="3" width="6" height="12" rx="3" stroke="var(--accent)" stroke-width="2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg>';
+    iconEl.innerHTML = granted ? CHECK_ICON : PERM_ICONS[key].idle;
+    subEl.textContent = granted ? "Granted" : PERM_ICONS[key].sub;
 
-    subEl.textContent = granted ? "Granted" : "Not granted yet";
-
+    // Swap right-side control: button ↔ "Ready" pill.
+    const existingBtn = row.querySelector("[data-perm-open]");
+    const existingStatus = row.querySelector(".perm-status");
     if (granted) {
-      btn.outerHTML = '<div class="perm-status"><span class="status-dot"></span> Ready</div>';
-    } else if (!micRow.querySelector("[data-perm-open]")) {
-      // status was replaced earlier, rebuild the button
-      const status = micRow.querySelector(".perm-status");
-      if (status) {
+      if (existingBtn) {
+        const pill = document.createElement("div");
+        pill.className = "perm-status";
+        pill.innerHTML = '<span class="status-dot"></span> Ready';
+        existingBtn.replaceWith(pill);
+      }
+    } else {
+      if (existingStatus) {
         const nb = document.createElement("button");
         nb.className = "secondary";
-        nb.setAttribute("data-perm-open", "mic");
-        nb.textContent = "Open System Settings";
-        nb.addEventListener("click", () => send("open_settings", "mic"));
-        status.replaceWith(nb);
+        nb.setAttribute("data-perm-open", key);
+        nb.textContent = "Grant";
+        existingStatus.replaceWith(nb);
       }
+      const liveBtn = row.querySelector("[data-perm-open]");
+      if (liveBtn) liveBtn.onclick = () => send("open_settings", key);
     }
-    // Always bind click for the current button (if any)
-    const liveBtn = micRow.querySelector("[data-perm-open]");
-    if (liveBtn) {
-      liveBtn.onclick = () => send("open_settings", "mic");
-    }
+  }
+
+  function renderPerms() {
+    renderPermRow("mic", state.micGranted);
+    renderPermRow("ax", state.axGranted);
   }
 
   // ---------- Hotkey capture ----------
@@ -685,7 +716,7 @@
     setState(patch) {
       Object.assign(state, patch || {});
       renderStep();
-      renderMic();
+      renderPerms();
       renderHotkey();
     },
     goto(step) {
@@ -696,7 +727,7 @@
 
   // Initial render
   renderStep();
-  renderMic();
+  renderPerms();
   renderHotkey();
   send("ready");
 })();
