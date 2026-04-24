@@ -8,7 +8,7 @@ from pathlib import Path
 # Add src to path so we can import open_flow without installing
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from open_flow.config import MODELS_DIR, load
+from open_flow.data.config import MODELS_DIR, load
 
 WHISPER_REPO = "Systran/faster-distil-whisper-large-v3"
 LLM_REPO = "Qwen/Qwen2.5-3B-Instruct-GGUF"

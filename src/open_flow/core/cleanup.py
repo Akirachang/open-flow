@@ -8,7 +8,7 @@ from pathlib import Path
 
 from llama_cpp import Llama
 
-from open_flow.config import Config
+from open_flow.data.config import Config
 
 logger = logging.getLogger(__name__)
 

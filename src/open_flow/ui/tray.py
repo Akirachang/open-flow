@@ -10,13 +10,13 @@ from typing import Callable
 
 import rumps
 
-from open_flow import config as cfg_module
-from open_flow.audio import AudioRecorder, LAST_WAV
-from open_flow.cleanup import Cleaner
-from open_flow.hotkey import HotkeyListener
-from open_flow.hud import HUD
-from open_flow.inject import inject
-from open_flow.transcribe import Transcriber
+from open_flow.core.audio import AudioRecorder, LAST_WAV
+from open_flow.core.cleanup import Cleaner
+from open_flow.core.hotkey import HotkeyListener
+from open_flow.core.pipeline import DictationPipeline, PipelineResult
+from open_flow.core.transcribe import Transcriber
+from open_flow.data import config as cfg_module
+from open_flow.ui.hud import HUD
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ class OpenFlowApp(rumps.App):
         )
         self._transcriber = Transcriber(self._cfg)
         self._cleaner: Cleaner | None = None
+        self._pipeline = DictationPipeline(self._transcriber, cleaner=None)
         self._hotkey: HotkeyListener | None = None
         self._hud = HUD()
         self._start_time: float = 0.0
@@ -90,6 +91,7 @@ class OpenFlowApp(rumps.App):
                 _ui(_ICON_IDLE, "Loading LLM…")
                 self._cleaner = Cleaner(self._cfg)
                 self._cleaner.load()
+                self._pipeline.set_cleaner(self._cleaner)
 
             self._start_hotkey()
             self._ready = True
@@ -151,40 +153,41 @@ class OpenFlowApp(rumps.App):
         Thread(target=self._process, args=(audio, record_duration), daemon=True).start()
 
     def _process(self, audio, record_duration: float) -> None:
-        def _ui(title: str, status: str, hide_hud: bool = False) -> None:
-            def _do() -> None:
-                setattr(self, "title", title)
-                self._set_status(status)
-                if hide_hud:
-                    self._hud.hide()
-            _call_on_main_thread(_do)
+        def _status(s: str) -> None:
+            _call_on_main_thread(lambda: self._set_status(s))
 
-        try:
-            text = self._transcriber.transcribe(audio, record_duration)
+        result: PipelineResult = self._pipeline.run(
+            audio, record_duration, on_status=_status
+        )
 
-            if not text:
-                _ui(_ICON_IDLE, "No speech detected", hide_hud=True)
-                return
+        self._render_result(result)
 
-            if self._cleaner is not None:
-                _call_on_main_thread(lambda: self._set_status("Cleaning…"))
-                text = self._cleaner.clean(text, record_duration)
+    def _render_result(self, result: PipelineResult) -> None:
+        def _finish(title: str, status: str) -> None:
+            _call_on_main_thread(
+                lambda: (setattr(self, "title", title),
+                         self._set_status(status),
+                         self._hud.hide())
+            )
 
-            injected = inject(text)
-            if not injected:
-                rumps.notification(
-                    title="Open Flow",
-                    subtitle="Skipped",
-                    message="Password fields are not supported.",
-                )
-
+        if result.injected and result.text:
             total = time.monotonic() - self._start_time
-            preview = text[:50] + ("…" if len(text) > 50 else "")
-            _ui(_ICON_IDLE, f"Done ({total:.1f}s) — {preview}", hide_hud=True)
+            preview = result.text[:50] + ("…" if len(result.text) > 50 else "")
+            _finish(_ICON_IDLE, f"Done ({total:.1f}s) — {preview}")
+            return
 
-        except Exception as exc:
-            logger.exception("Processing error")
-            _ui(_ICON_ERROR, f"Error: {exc}", hide_hud=True)
+        reason = result.skipped_reason
+        if reason == "no_speech":
+            _finish(_ICON_IDLE, "No speech detected")
+        elif reason == "password_field":
+            rumps.notification(
+                title="Open Flow",
+                subtitle="Skipped",
+                message="Password fields are not supported.",
+            )
+            _finish(_ICON_IDLE, "Skipped password field")
+        else:
+            _finish(_ICON_ERROR, f"Error: {result.error or 'unknown'}")
 
     # ------------------------------------------------------------------ #
     # Menu actions                                                         #
@@ -199,7 +202,12 @@ class OpenFlowApp(rumps.App):
             try:
                 self._cleaner = Cleaner(self._cfg)
                 self._set_status("Loading LLM…")
-                Thread(target=self._cleaner.load, daemon=True).start()
+
+                def _load_and_attach() -> None:
+                    self._cleaner.load()
+                    self._pipeline.set_cleaner(self._cleaner)
+
+                Thread(target=_load_and_attach, daemon=True).start()
             except FileNotFoundError:
                 rumps.notification(
                     title="Open Flow",
@@ -208,6 +216,8 @@ class OpenFlowApp(rumps.App):
                 )
                 self._cfg.llm_enabled = False
                 sender.title = "LLM Cleanup: off"
+        elif not self._cfg.llm_enabled:
+            self._pipeline.set_cleaner(None)
 
     def _open_prefs(self, _: rumps.MenuItem) -> None:
         window = rumps.Window(

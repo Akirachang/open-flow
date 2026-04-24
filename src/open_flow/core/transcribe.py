@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from faster_whisper import WhisperModel
 
-from open_flow.config import Config
+from open_flow.data.config import Config
 
 logger = logging.getLogger(__name__)
 
