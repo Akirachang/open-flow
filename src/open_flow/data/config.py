@@ -27,7 +27,7 @@ class Config:
     no_speech_threshold: float = 0.6
     min_audio_seconds: float = 0.3
     models_dir: str = field(default_factory=lambda: str(MODELS_DIR))
-    onboarding_complete: bool = True
+    onboarding_complete: bool = False
 
     @property
     def models_path(self) -> Path:
