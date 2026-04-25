@@ -373,10 +373,6 @@
     font-size: 20px;
     line-height: 1.45;
     color: var(--ink);
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 0;
   }
   .hk-placeholder {
     font-family: var(--font-serif);
@@ -385,16 +381,15 @@
     color: var(--subtle);
   }
   .hk-typer[data-state="filled"] .hk-placeholder,
-  .hk-typer[data-state="recording"] .hk-placeholder,
-  .hk-typer[data-state="transcribing"] .hk-placeholder { display: none; }
+  .hk-typer[data-state="recording"] .hk-placeholder { display: none; }
 
   .hk-caret {
     display: inline-block;
     width: 2px;
-    height: 20px;
+    height: 1.05em;
     margin: 0 1px;
     background: var(--ink);
-    transform: translateY(3px);
+    vertical-align: text-bottom;
     animation: hk-caret-blink 1.05s steps(2) infinite;
   }
   @keyframes hk-caret-blink {
@@ -946,11 +941,19 @@
     state.pressed = false;
     state.hasTried = true;
     state.transcript = { state: "transcribing", text: "" };
+    transcribingShownAt = performance.now();
     renderHotkey();
     renderTranscript();
     renderFooter();
     send("stop_record");
   }
+
+  // Minimum time the "transcribing…" placeholder must stay visible, so
+  // a fast Whisper response doesn't blink past the user.
+  const TRANSCRIBING_MIN_MS = 700;
+  let transcribingShownAt = 0;
+  let pendingTranscript = null;
+  let pendingTranscriptTimer = null;
 
   // The real hotkey is Right Option. Only react on the hotkey step so the
   // key still behaves normally elsewhere.
@@ -1010,11 +1013,10 @@
         '<span class="hk-caret"></span>' +
         '<span class="hk-placeholder">Your text will appear here</span>';
     } else if (t.state === "recording") {
-      // Pure caret while the mic is open — feels like you're typing.
-      tboxBody.innerHTML = '<span class="hk-caret"></span>';
+      tboxBody.innerHTML =
+        '<span class="hk-placeholder">Talk to type — let go when done.</span>';
     } else if (t.state === "transcribing") {
       tboxBody.innerHTML =
-        '<span class="hk-caret"></span>' +
         '<span class="hk-placeholder">Transcribing — be there in a second…</span>';
     } else if (t.state === "filled") {
       const text = (t.text || "").trim();
@@ -1082,12 +1084,31 @@
     setTranscript(payload) {
       // payload: { text: '...' } — Python pushes after Whisper returns.
       const text = (payload && typeof payload.text === "string") ? payload.text : "";
-      state.transcript = { state: "filled", text };
-      state.hasTried = true;
-      renderTranscript();
-      // Update the pill so it goes from "transcribing…" → "got it".
-      renderHotkey();
-      if (state.step === 3) renderFooter();
+
+      const apply = () => {
+        state.transcript = { state: "filled", text };
+        state.hasTried = true;
+        renderTranscript();
+        renderHotkey();
+        if (state.step === 3) renderFooter();
+        pendingTranscript = null;
+        pendingTranscriptTimer = null;
+      };
+
+      // Cancel any pending flip from a previous press.
+      if (pendingTranscriptTimer) {
+        clearTimeout(pendingTranscriptTimer);
+        pendingTranscriptTimer = null;
+      }
+      pendingTranscript = { text };
+
+      const elapsed = transcribingShownAt
+        ? performance.now() - transcribingShownAt
+        : TRANSCRIBING_MIN_MS;
+      const wait = Math.max(0, TRANSCRIBING_MIN_MS - elapsed);
+
+      if (wait === 0) apply();
+      else pendingTranscriptTimer = setTimeout(apply, wait);
     },
     goto(step) {
       state.step = Math.max(0, Math.min(TOTAL - 1, step | 0));
