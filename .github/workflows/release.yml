@@ -24,10 +24,8 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
-      - name: Generate icon and DMG background
-        run: |
-          uv run python packaging/make_icon.py
-          uv run python packaging/make_dmg_background.py
+      - name: Generate icon
+        run: uv run python packaging/make_icon.py
 
       - name: Build DMG
         run: ./packaging/build.sh
