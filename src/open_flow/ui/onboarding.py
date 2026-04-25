@@ -338,6 +338,8 @@ class OnboardingWizard:
                 trusted = _request_accessibility()
                 if self._ready:
                     self._push_state({"axGranted": bool(trusted)})
+                if not trusted:
+                    self._poll_until_ax_granted()
             else:
                 _open_privacy_pane(key)
         elif name == "step":
@@ -365,6 +367,26 @@ class OnboardingWizard:
     # Window focus observer                                                #
     # ------------------------------------------------------------------ #
 
+    def _poll_until_ax_granted(self) -> None:
+        """Fast-poll every 200ms for up to 60s after the user clicks Grant.
+
+        Belt-and-suspenders backup for the window-key observer — whichever
+        fires first wins.
+        """
+        def loop() -> None:
+            for _ in range(300):
+                if self._finished or self._poll_stop.is_set():
+                    break
+                time.sleep(0.2)
+                if _check_accessibility():
+                    logger.info("AX granted — pushing state from grant poll")
+                    AppHelper.callAfter(
+                        lambda: self._push_state({"axGranted": True})
+                    )
+                    break
+
+        threading.Thread(target=loop, daemon=True, name="of-ax-grant-poll").start()
+
     def _start_window_key_observer(self) -> None:
         """Push a fresh permission state whenever the window regains focus.
 
@@ -375,11 +397,14 @@ class OnboardingWizard:
         """
         def _on_key(_notification) -> None:
             logger.info("Window became key — re-checking permissions")
-            if self._ready:
-                self._push_state({
-                    "micGranted": _check_mic_permission(),
-                    "axGranted": _check_accessibility(),
-                })
+            if not self._ready or self._web is None:
+                return
+            # Already on the main queue — call evaluateJavaScript directly
+            # rather than going through AppHelper.callAfter (avoids double-hop).
+            mic = _check_mic_permission()
+            ax = _check_accessibility()
+            js = f"window.openflow && window.openflow.setState({json.dumps({'micGranted': bool(mic), 'axGranted': bool(ax)})});"
+            self._web.evaluateJavaScript_completionHandler_(js, None)
 
         self._window_observer = NSNotificationCenter.defaultCenter()\
             .addObserverForName_object_queue_usingBlock_(
