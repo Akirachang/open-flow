@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Open Flow installer — run with:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/open-flow/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Akirachang/open-flow/main/install.sh | bash
 #
 # Local testing (after running ./packaging/build.sh):
 #   ./install.sh --local dist/OpenFlow.dmg
@@ -9,8 +9,8 @@ set -euo pipefail
 APP_NAME="Open Flow"
 APP_DEST="/Applications/$APP_NAME.app"
 # ── UPDATE THESE when you upload a new GitHub Release ─────────────────────
-DMG_URL="https://github.com/YOUR_USERNAME/open-flow/releases/latest/download/OpenFlow.dmg"
-SHA_URL="https://github.com/YOUR_USERNAME/open-flow/releases/latest/download/OpenFlow.dmg.sha256"
+DMG_URL="https://github.com/Akirachang/open-flow/releases/latest/download/OpenFlow.dmg"
+SHA_URL="https://github.com/Akirachang/open-flow/releases/latest/download/OpenFlow.dmg.sha256"
 # ──────────────────────────────────────────────────────────────────────────
 
 TMP_DIR="$(mktemp -d)"
@@ -108,5 +108,5 @@ printf "  Look for the  ◉  icon in your menu bar.\n"
 printf "  The setup wizard will guide you through the first-run steps.\n"
 printf "\n"
 printf "  To uninstall later:\n"
-printf "    curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/open-flow/main/uninstall.sh | bash\n"
+printf "    curl -fsSL https://raw.githubusercontent.com/Akirachang/open-flow/main/uninstall.sh | bash\n"
 printf "\n"

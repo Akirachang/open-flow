@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Open Flow uninstaller — run with:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/open-flow/main/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Akirachang/open-flow/main/uninstall.sh | bash
 set -euo pipefail
 
 APP_NAME="Open Flow"

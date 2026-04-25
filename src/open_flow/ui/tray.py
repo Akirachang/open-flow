@@ -11,9 +11,9 @@ from threading import Thread
 from typing import Callable
 
 # ── Update check ─────────────────────────────────────────────────────────────
-# Replace YOUR_USERNAME with your GitHub username once the repo is public.
+# Replace Akirachang with your GitHub username once the repo is public.
 _GITHUB_RELEASES_URL = (
-    "https://api.github.com/repos/YOUR_USERNAME/open-flow/releases/latest"
+    "https://api.github.com/repos/Akirachang/open-flow/releases/latest"
 )
 _CURRENT_VERSION = "0.1.0"
 
@@ -270,7 +270,7 @@ class OpenFlowApp(rumps.App):
 
     def _check_for_update(self) -> None:
         """Check GitHub Releases for a newer version. Runs once on startup."""
-        if "YOUR_USERNAME" in _GITHUB_RELEASES_URL:
+        if "Akirachang" in _GITHUB_RELEASES_URL:
             return  # placeholder URL — skip until repo is configured
         try:
             req = urllib.request.Request(
@@ -286,7 +286,7 @@ class OpenFlowApp(rumps.App):
                     lambda: rumps.notification(
                         title="Open Flow",
                         subtitle=f"Version {latest} is available",
-                        message="Visit github.com/YOUR_USERNAME/open-flow/releases to update.",
+                        message="Visit github.com/Akirachang/open-flow/releases to update.",
                     )
                 )
         except Exception:
