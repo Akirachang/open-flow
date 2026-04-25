@@ -40,6 +40,8 @@ def _run_onboarding(cfg, cfg_module) -> None:
         cfg.onboarding_complete = True
         cfg_module.save(cfg)
         completed.set()
+        from open_flow.infra import launch_agent
+        launch_agent.register()
         AppHelper.stopEventLoop()
 
     wizard = OnboardingWizard(cfg, on_complete=_on_complete)

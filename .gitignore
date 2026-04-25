@@ -30,4 +30,8 @@ build/
 warn-*.txt
 xref-*.html
 
+# Generated packaging assets (produced by make_icon.py)
+packaging/OpenFlow.iconset/
+packaging/OpenFlow.icns
+
 CLAUDE.md

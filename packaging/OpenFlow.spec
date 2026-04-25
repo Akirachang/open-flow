@@ -97,7 +97,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Open Flow.app",
-    icon=None,
+    icon=str(__import__("pathlib").Path(SPECPATH) / "OpenFlow.icns"),
     bundle_identifier="com.openflow.app",
     info_plist={
         "CFBundleName": "Open Flow",

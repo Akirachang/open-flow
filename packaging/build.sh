@@ -4,19 +4,26 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PACKAGING="$REPO_ROOT/packaging"
 DIST_DIR="$REPO_ROOT/dist"
 APP_NAME="Open Flow"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/OpenFlow.dmg"
+ICON="$PACKAGING/OpenFlow.icns"
 
 echo "==> Cleaning previous build..."
 rm -rf "$DIST_DIR" "$REPO_ROOT/build"
 
+# ── Generate icon (always, so changes to make_icon.py take effect) ───────────
+cd "$REPO_ROOT"
+echo "==> Generating icon..."
+uv run python packaging/make_icon.py
+
+# ── Build the .app ───────────────────────────────────────────────────────────
 echo "==> Installing PyInstaller..."
 uv add pyinstaller --quiet
 
 echo "==> Building .app with PyInstaller..."
-cd "$REPO_ROOT"
 uv run pyinstaller packaging/OpenFlow.spec \
   --distpath "$DIST_DIR" \
   --workpath "$REPO_ROOT/build" \
@@ -38,8 +45,12 @@ fi
 echo "==> Creating DMG..."
 rm -f "$DMG_PATH"
 
+ICON_FLAG=""
+[ -f "$ICON" ] && ICON_FLAG="--volicon $ICON"
+
 create-dmg \
   --volname "$APP_NAME" \
+  $ICON_FLAG \
   --window-size 560 340 \
   --icon-size 100 \
   --icon "$APP_NAME.app" 140 170 \
@@ -49,8 +60,16 @@ create-dmg \
   "$DMG_PATH" \
   "$APP_BUNDLE"
 
+# ── Checksum ─────────────────────────────────────────────────────────────────
+echo "==> Generating checksum..."
+cd "$DIST_DIR"
+shasum -a 256 OpenFlow.dmg > OpenFlow.dmg.sha256
+echo "    $(cat OpenFlow.dmg.sha256)"
+
 echo ""
-echo "Done! Distributable DMG:"
+echo "Done! Distributable files:"
 echo "  $DMG_PATH"
+echo "  ${DMG_PATH}.sha256"
 echo ""
-echo "Upload this file to a GitHub Release and update install.sh with the download URL."
+echo "Next: create a GitHub Release tagged v<version> and upload both files."
+echo "      Then update YOUR_USERNAME in install.sh, uninstall.sh, and tray.py."

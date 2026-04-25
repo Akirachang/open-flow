@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Generate icon and DMG background
+        run: |
+          uv run python packaging/make_icon.py
+          uv run python packaging/make_dmg_background.py
+
+      - name: Build DMG
+        run: ./packaging/build.sh
+
+      - name: Generate SHA-256 checksum
+        run: |
+          cd dist
+          shasum -a 256 OpenFlow.dmg > OpenFlow.dmg.sha256
+          cat OpenFlow.dmg.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/OpenFlow.dmg
+            dist/OpenFlow.dmg.sha256
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

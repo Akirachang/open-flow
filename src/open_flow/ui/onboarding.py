@@ -28,7 +28,8 @@ from AppKit import (
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSURL, NSObject
+from Foundation import NSURL, NSNotificationCenter, NSObject, NSOperationQueue
+from AppKit import NSWindowDidBecomeKeyNotification
 from PyObjCTools import AppHelper
 from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
@@ -227,6 +228,7 @@ class OnboardingWizard:
         self._ready = False
         self._finished = False
         self._close_delegate: _WindowCloseDelegate | None = None
+        self._window_observer = None  # NSNotificationCenter token
         # Live demo on the hotkey-try-it step. Lazily created so we never
         # touch the audio device or load Whisper until the user actually
         # holds the key.
@@ -246,6 +248,7 @@ class OnboardingWizard:
         if self._web is not None:
             self._window.makeFirstResponder_(self._web)
         self._start_permission_poll()
+        self._start_window_key_observer()
 
     # ------------------------------------------------------------------ #
     # Window + web view                                                    #
@@ -352,6 +355,33 @@ class OnboardingWizard:
         def _run() -> None:
             self._web.evaluateJavaScript_completionHandler_(js, None)
         AppHelper.callAfter(_run)
+
+    # ------------------------------------------------------------------ #
+    # Window focus observer                                                #
+    # ------------------------------------------------------------------ #
+
+    def _start_window_key_observer(self) -> None:
+        """Push a fresh permission state whenever the window regains focus.
+
+        AXIsProcessTrusted() caches its result within the same process, so the
+        poll loop alone won't catch a grant that happened while the user was in
+        System Settings. Observing NSWindowDidBecomeKeyNotification fires the
+        moment the user clicks back on our window — a reliable trigger point.
+        """
+        def _on_key(_notification) -> None:
+            if self._ready:
+                self._push_state({
+                    "micGranted": _check_mic_permission(),
+                    "axGranted": _check_accessibility(),
+                })
+
+        self._window_observer = NSNotificationCenter.defaultCenter()\
+            .addObserverForName_object_queue_usingBlock_(
+                NSWindowDidBecomeKeyNotification,
+                self._window,
+                NSOperationQueue.mainQueue(),
+                _on_key,
+            )
 
     # ------------------------------------------------------------------ #
     # Permission polling                                                   #
@@ -657,6 +687,9 @@ class OnboardingWizard:
             return
         self._finished = True
         self._poll_stop.set()
+        if self._window_observer is not None:
+            NSNotificationCenter.defaultCenter().removeObserver_(self._window_observer)
+            self._window_observer = None
         if self._window is not None:
             # Detach the delegate first so orderOut_ doesn't re-enter _finish.
             self._window.setDelegate_(None)
