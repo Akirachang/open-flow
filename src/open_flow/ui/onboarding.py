@@ -14,6 +14,7 @@ import json
 import logging
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -226,6 +227,12 @@ class OnboardingWizard:
         self._ready = False
         self._finished = False
         self._close_delegate: _WindowCloseDelegate | None = None
+        # Live demo on the hotkey-try-it step. Lazily created so we never
+        # touch the audio device or load Whisper until the user actually
+        # holds the key.
+        self._demo_recorder = None
+        self._demo_transcriber = None
+        self._demo_start_time: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Public                                                               #
@@ -239,7 +246,6 @@ class OnboardingWizard:
         if self._web is not None:
             self._window.makeFirstResponder_(self._web)
         self._start_permission_poll()
-        self._start_background_download()
 
     # ------------------------------------------------------------------ #
     # Window + web view                                                    #
@@ -303,6 +309,16 @@ class OnboardingWizard:
                 "micGranted": _check_mic_permission(),
                 "axGranted": _check_accessibility(),
             })
+            # If the models are already on disk we can skip the Download
+            # button and warm them straight away.
+            if self._models_ready():
+                self._start_background_download()
+        elif name == "start_download":
+            self._start_background_download()
+        elif name == "start_record":
+            self._demo_start()
+        elif name == "stop_record":
+            self._demo_stop()
         elif name == "open_settings":
             key = str(payload) if payload else "mic"
             if key == "mic":
@@ -368,57 +384,269 @@ class OnboardingWizard:
         threading.Thread(target=loop, daemon=True, name="of-perm-poll").start()
 
     # ------------------------------------------------------------------ #
-    # Background model download                                            #
+    # Background setup: download models + warm Whisper                     #
     # ------------------------------------------------------------------ #
 
-    def _start_background_download(self) -> None:
-        """Kick off model downloads if missing — runs silently while wizard is up.
+    # Approximate sizes for progress estimation (disk-poll-based).
+    _WHISPER_SIZE_BYTES = 1_500_000_000   # ~1.5 GB
+    _LLM_SIZE_BYTES = 2_000_000_000       # ~2.0 GB
 
-        If they're not ready by the time the user hits Start, the tray app
-        surfaces a notification separately.
-        """
-        if self._models_ready():
+    def _push_setup(self, patch: dict) -> None:
+        """Call window.openflow.setSetup(patch) on the main thread."""
+        if self._web is None:
             return
+        js = f"window.openflow && window.openflow.setSetup({json.dumps(patch)});"
+        AppHelper.callAfter(
+            lambda: self._web.evaluateJavaScript_completionHandler_(js, None)
+        )
 
-        def worker() -> None:
-            try:
-                from huggingface_hub import hf_hub_download, snapshot_download
-            except Exception as exc:
-                logger.error("huggingface_hub unavailable: %s", exc)
-                return
+    def _start_background_download(self) -> None:
+        """Download Whisper + Qwen, then warm Whisper. Pushes progress to JS.
 
-            tasks = [
-                ("Systran/faster-distil-whisper-large-v3",
-                 self._cfg.whisper_model_path, None),
-                ("Qwen/Qwen2.5-3B-Instruct-GGUF",
-                 self._cfg.llm_model_path.parent,
-                 "qwen2.5-3b-instruct-q4_k_m.gguf"),
-            ]
-            for repo, dest, filename in tasks:
-                target = dest if filename is None else dest / filename
-                if target.exists():
-                    continue
-                try:
-                    if filename is None:
-                        snapshot_download(repo_id=repo, local_dir=str(dest),
-                                          local_dir_use_symlinks=False)
-                    else:
-                        hf_hub_download(repo_id=repo, filename=filename,
-                                        local_dir=str(dest))
-                except Exception as exc:
-                    logger.error("Model download failed (%s): %s", repo, exc)
-                    return
-
+        Idempotent — if the worker is already running, calling again is a no-op.
+        """
+        if self._download_thread is not None and self._download_thread.is_alive():
+            return
         self._download_thread = threading.Thread(
-            target=worker, daemon=True, name="of-model-download"
+            target=self._setup_worker, daemon=True, name="of-setup"
         )
         self._download_thread.start()
+
+    def _setup_worker(self) -> None:
+        """Drive a single combined progress bar across:
+            whisper download   →  0..weight_w%
+            qwen download      →  weight_w..(weight_w+weight_l)%   (≈100)
+            warm-up            →  indeterminate "warming" pulse, then 100%
+        """
+        total = self._WHISPER_SIZE_BYTES + self._LLM_SIZE_BYTES
+        weight_w = self._WHISPER_SIZE_BYTES / total * 100  # ≈ 42.86
+        weight_l = self._LLM_SIZE_BYTES / total * 100      # ≈ 57.14
+
+        whisper_path = self._cfg.whisper_model_path
+        llm_path = self._cfg.llm_model_path
+
+        whisper_done = whisper_path.exists()
+        llm_done = llm_path.exists()
+        base_pct = (weight_w if whisper_done else 0.0) + (weight_l if llm_done else 0.0)
+
+        # Tell the UI where we're starting so the bar isn't stuck at 0%.
+        if base_pct > 0:
+            self._push_setup({
+                "state": "downloading",
+                "status": "Resuming setup",
+                "pct": int(round(base_pct)),
+            })
+
+        # Whisper ----------------------------------------------------------
+        if not whisper_done:
+            ok = self._download_with_progress(
+                target_dir=whisper_path,
+                repo="Systran/faster-distil-whisper-large-v3",
+                filename=None,
+                expected_bytes=self._WHISPER_SIZE_BYTES,
+                base_pct=0.0,
+                weight=weight_w,
+                status="Downloading speech model",
+            )
+            if not ok:
+                self._push_setup({
+                    "state": "error",
+                    "status": "Download failed — check your connection",
+                })
+                return
+            base_pct = weight_w
+
+        # LLM (optional) ---------------------------------------------------
+        if not llm_done:
+            ok = self._download_with_progress(
+                target_dir=llm_path.parent,
+                repo="Qwen/Qwen2.5-3B-Instruct-GGUF",
+                filename=llm_path.name,
+                expected_bytes=self._LLM_SIZE_BYTES,
+                base_pct=base_pct,
+                weight=weight_l,
+                status="Downloading cleanup model",
+            )
+            if not ok:
+                # LLM is optional — log it, push to base_pct + weight_l so the bar
+                # still completes and the user can continue (cleanup off).
+                logger.warning("LLM download failed; continuing without it")
+            base_pct = base_pct + weight_l
+
+        # Warm Whisper into memory ----------------------------------------
+        self._push_setup({
+            "state": "warming",
+            "status": "Warming up the speech model",
+            "pct": 100,
+        })
+        try:
+            from open_flow.core.transcribe import Transcriber
+            transcriber = Transcriber(self._cfg)
+            transcriber.load()
+            # Stash so the hotkey-try-it step can reuse the warmed instance.
+            self._demo_transcriber = transcriber
+        except Exception as exc:
+            logger.exception("Whisper warm-up failed")
+            self._push_setup({
+                "state": "error",
+                "status": f"Warm-up failed: {str(exc)[:60]}",
+            })
+            return
+
+        self._push_setup({
+            "state": "ready",
+            "status": "Ready to dictate.",
+            "pct": 100,
+        })
+
+    def _download_with_progress(
+        self,
+        *,
+        target_dir: Path,
+        repo: str,
+        filename: str | None,
+        expected_bytes: int,
+        base_pct: float,
+        weight: float,
+        status: str,
+    ) -> bool:
+        """Run an HF download in a sub-thread; poll disk and push combined pct."""
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+        except Exception as exc:
+            logger.error("huggingface_hub unavailable: %s", exc)
+            return False
+
+        result: dict = {"err": None}
+
+        def runner() -> None:
+            try:
+                if filename is None:
+                    snapshot_download(
+                        repo_id=repo,
+                        local_dir=str(target_dir),
+                        local_dir_use_symlinks=False,
+                    )
+                else:
+                    hf_hub_download(
+                        repo_id=repo, filename=filename, local_dir=str(target_dir)
+                    )
+            except Exception as exc:
+                result["err"] = exc
+
+        t = threading.Thread(target=runner, daemon=True, name=f"of-dl-{repo}")
+        t.start()
+
+        while t.is_alive():
+            local = self._estimate_pct(target_dir, expected_bytes)
+            combined = base_pct + (local / 100.0) * weight
+            self._push_setup({
+                "state": "downloading",
+                "status": status,
+                "pct": int(round(min(99.0, combined))),
+            })
+            t.join(timeout=0.5)
+
+        if result["err"] is not None:
+            logger.error("Model download failed (%s): %s", repo, result["err"])
+            return False
+
+        self._push_setup({
+            "state": "downloading",
+            "status": status,
+            "pct": int(round(base_pct + weight)),
+        })
+        return True
+
+    @staticmethod
+    def _estimate_pct(path: Path, expected_bytes: int) -> int:
+        """Estimate download % by walking directory size on disk."""
+        try:
+            if path.is_file():
+                size = path.stat().st_size
+            elif path.exists():
+                size = sum(
+                    p.stat().st_size for p in path.rglob("*") if p.is_file()
+                )
+            else:
+                size = 0
+        except OSError:
+            size = 0
+        if expected_bytes <= 0:
+            return 0
+        return max(0, min(99, int(size * 100 / expected_bytes)))
 
     def _models_ready(self) -> bool:
         return (
             self._cfg.whisper_model_path.exists()
             and self._cfg.llm_model_path.exists()
         )
+
+    # ------------------------------------------------------------------ #
+    # Live demo (hotkey try-it step)                                       #
+    # ------------------------------------------------------------------ #
+
+    def _push_transcript(self, text: str) -> None:
+        """Call window.openflow.setTranscript({text}) on the main thread."""
+        if self._web is None:
+            return
+        js = f"window.openflow && window.openflow.setTranscript({json.dumps({'text': text})});"
+        AppHelper.callAfter(
+            lambda: self._web.evaluateJavaScript_completionHandler_(js, None)
+        )
+
+    def _demo_start(self) -> None:
+        """Begin recording when the user holds Right Option on step 3."""
+        try:
+            if self._demo_recorder is None:
+                from open_flow.core.audio import AudioRecorder
+                self._demo_recorder = AudioRecorder(
+                    sample_rate=self._cfg.sample_rate,
+                    channels=self._cfg.channels,
+                )
+            self._demo_start_time = time.monotonic()
+            self._demo_recorder.start()
+        except Exception:
+            logger.exception("Demo: recorder start failed")
+            self._push_transcript("")
+
+    def _demo_stop(self) -> None:
+        """Stop recording, transcribe, and push the result back to JS."""
+        if self._demo_recorder is None:
+            self._push_transcript("")
+            return
+        try:
+            audio = self._demo_recorder.stop()
+        except Exception:
+            logger.exception("Demo: recorder stop failed")
+            self._push_transcript("")
+            return
+
+        duration = max(0.0, time.monotonic() - self._demo_start_time)
+
+        threading.Thread(
+            target=self._demo_transcribe_worker,
+            args=(audio, duration),
+            daemon=True,
+            name="of-demo-transcribe",
+        ).start()
+
+    def _demo_transcribe_worker(self, audio, duration: float) -> None:
+        try:
+            transcriber = self._demo_transcriber
+            if transcriber is None:
+                # Models may have been on disk already and we never warmed.
+                from open_flow.core.transcribe import Transcriber
+                transcriber = Transcriber(self._cfg)
+                transcriber.load()
+                self._demo_transcriber = transcriber
+
+            text = transcriber.transcribe(audio, duration) or ""
+        except Exception:
+            logger.exception("Demo: transcription failed")
+            text = ""
+
+        self._push_transcript(text.strip())
 
     # ------------------------------------------------------------------ #
     # Finish                                                               #

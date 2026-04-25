@@ -32,6 +32,11 @@
 
     --good: #E4E4E6;
     --danger: #C8C8CC;
+
+    /* Single splash of color, reserved for the "ready" state on the setup card. */
+    --ready: #5FB97A;
+    --ready-soft: rgba(95,185,122,0.18);
+    --ready-line: rgba(95,185,122,0.45);
   }
 
   html, body {
@@ -247,15 +252,103 @@
     background: var(--good);
   }
 
+  /* ---------- Setup step ---------- */
+
+  .setup-card {
+    background: var(--card);
+    border: 0.5px solid var(--line);
+    border-radius: 14px;
+    padding: 22px 22px 18px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .setup-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    gap: 14px;
+  }
+  .setup-status-text {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+  }
+  .setup-pct {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    transition: color 200ms ease;
+  }
+  .setup-card[data-state="ready"] .setup-status-text { color: var(--ready); }
+  .setup-card[data-state="ready"] .setup-pct        { color: var(--ready); }
+  .setup-card[data-state="ready"] .setup-track-fill { background: var(--ready); }
+  .setup-card[data-state="error"] .setup-pct        { color: var(--danger); }
+
+  .setup-track {
+    height: 5px;
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+  }
+  .setup-track-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: inherit;
+    transition: width 250ms ease;
+  }
+  .setup-card[data-state="warming"] .setup-track-fill {
+    width: 100% !important;
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0.18) 0%,
+      var(--accent) 50%,
+      rgba(255,255,255,0.18) 100%
+    );
+    background-size: 200% 100%;
+    animation: setup-shimmer 1.4s linear infinite;
+  }
+  @keyframes setup-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .setup-foot {
+    margin-top: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--subtle);
+    letter-spacing: 0.01em;
+  }
+  .setup-pep {
+    margin-top: 14px;
+    min-height: 18px;
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 480ms ease;
+  }
+  .setup-pep.show { opacity: 1; }
+
   /* ---------- Hotkey step ---------- */
 
-  .hk-layout {
+  .hk-head {
+    margin-bottom: 28px;
+    max-width: 540px;
+  }
+  .hk-stage {
     display: flex;
-    gap: 44px;
+    flex-direction: row;
     flex: 1;
     align-items: center;
+    justify-content: space-between;
+    gap: 36px;
   }
-  .hk-text { flex: 1; max-width: 300px; }
 
   .inline-key {
     font-family: var(--font-mono);
@@ -267,9 +360,71 @@
     font-size: 0.9em;
   }
 
+  /* borderless transcript region — no card, no chrome, just text + caret */
+  .hk-typer {
+    flex: 1;
+    min-width: 0;
+    max-width: 360px;
+    padding: 4px 0;
+  }
+  .hk-typer-body {
+    min-height: 64px;
+    font-family: var(--font-serif);
+    font-size: 20px;
+    line-height: 1.45;
+    color: var(--ink);
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0;
+  }
+  .hk-placeholder {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 17px;
+    color: var(--subtle);
+  }
+  .hk-typer[data-state="filled"] .hk-placeholder,
+  .hk-typer[data-state="recording"] .hk-placeholder,
+  .hk-typer[data-state="transcribing"] .hk-placeholder { display: none; }
+
+  .hk-caret {
+    display: inline-block;
+    width: 2px;
+    height: 20px;
+    margin: 0 1px;
+    background: var(--ink);
+    transform: translateY(3px);
+    animation: hk-caret-blink 1.05s steps(2) infinite;
+  }
+  @keyframes hk-caret-blink {
+    0%, 49%   { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  .hk-transcript {
+    font-family: var(--font-serif);
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+  .hk-transcript.empty {
+    font-family: var(--font-serif);
+    font-style: italic;
+    color: var(--muted);
+    font-size: 18px;
+  }
+
+  .hk-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
   .hk-capture {
-    display: flex; flex-direction: column; align-items: center; gap: 18px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
     position: relative;
+    flex-shrink: 0;
   }
 
   .key-cap {
@@ -286,6 +441,12 @@
     color: var(--ink-soft);
     transition: all 120ms ease;
   }
+  .key-cap-md {
+    width: 112px; height: 112px;
+    border-radius: 18px;
+  }
+  .key-cap-md .glyph { font-size: 44px !important; }
+  .key-cap-md .tag { font-size: 10.5px !important; letter-spacing: 1.4px !important; }
   .key-cap.pressed {
     background: linear-gradient(180deg, var(--paper-deep), var(--card));
     box-shadow:
@@ -304,15 +465,15 @@
   .key-cap.pressed .tag { color: var(--accent); }
 
   .hk-status-pill {
-    height: 34px;
-    width: 230px;
+    height: 38px;
+    width: 250px;
     display: flex; align-items: center; justify-content: center; gap: 10px;
-    padding: 0 14px;
-    border-radius: 17px;
+    padding: 0 16px;
+    border-radius: 19px;
     background: var(--card);
     border: 0.5px solid var(--line);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--subtle);
     transition: background 150ms, border-color 150ms, color 150ms;
   }
@@ -342,7 +503,7 @@
 
   .hand-arrow {
     position: absolute;
-    top: -56px;
+    top: -48px;
     left: 50%;
     transform: translateX(-50%) rotate(4deg);
     pointer-events: none;
@@ -440,40 +601,69 @@
     </div>
   </div>
 
-  <!-- ─────────── Step 2: Hotkey try-it ─────────── -->
+  <!-- ─────────── Step 2: Getting things ready ─────────── -->
   <div class="step body" data-step="2">
-    <div class="hk-layout">
-      <div class="hk-text">
-        <div class="kicker">step two</div>
-        <div class="headline lg">Try your hotkey.</div>
-        <div class="tagline">
-          Hold <span class="inline-key">Right ⌥</span> to start recording. Let go to transcribe.
+    <div style="max-width:560px; width:100%;">
+      <div class="kicker">step two</div>
+      <div class="headline lg">Getting things ready.</div>
+      <div class="tagline" style="margin-bottom:28px;">
+        Setting up your local speech and cleanup models. This only happens once — the next launch will be instant.
+      </div>
+
+      <div id="setup-card" class="setup-card" data-state="waiting">
+        <div class="setup-head">
+          <div class="setup-status-text" id="setup-status">Preparing…</div>
+          <div class="setup-pct" id="setup-pct">0%</div>
         </div>
-        <div class="footnote" style="margin-top:16px;">
-          You can change this later in Settings.
+        <div class="setup-track">
+          <div class="setup-track-fill" id="setup-fill"></div>
+        </div>
+        <div class="setup-foot">~3.5 GB total · stays on your Mac</div>
+        <div class="setup-pep" id="setup-pep"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────── Step 3: Hotkey try-it ─────────── -->
+  <div class="step body" data-step="3">
+    <div class="hk-head">
+      <div class="kicker">step three</div>
+      <div class="headline lg">Try your hotkey.</div>
+      <div class="tagline">
+        Hold <span class="inline-key">Right ⌥</span>, speak, and let go — your words will land in the box.
+      </div>
+    </div>
+
+    <div class="hk-stage">
+      <!-- left: fake target text box -->
+      <div class="hk-typer" id="hk-textbox" data-state="empty">
+        <div class="hk-typer-body" id="hk-textbox-body">
+          <span class="hk-placeholder">Your text will appear here…</span><span class="hk-caret"></span>
         </div>
       </div>
 
-      <div class="hk-capture" id="hk-capture">
-        <svg class="hand-arrow" id="hk-arrow" width="48" height="48" viewBox="0 0 60 60" fill="none">
-          <path d="M28 6 C 14 16, 14 32, 20 48 C 22 52, 24 54, 26 54"
-            stroke="var(--accent)" stroke-width="2" stroke-linecap="round" fill="none"/>
-          <path d="M14 48 L 26 54 L 24 42"
-            stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        </svg>
-        <div class="key-cap" id="key-cap">
-          <div class="glyph">⌥</div>
-          <div class="tag">right option</div>
-        </div>
-        <div class="hk-status-pill" id="hk-pill">
-          <span id="hk-pill-text">press and hold</span>
+      <div class="hk-controls">
+        <div class="hk-capture" id="hk-capture">
+          <svg class="hand-arrow" id="hk-arrow" width="40" height="40" viewBox="0 0 60 60" fill="none">
+            <path d="M28 6 C 14 16, 14 32, 20 48 C 22 52, 24 54, 26 54"
+              stroke="var(--accent)" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <path d="M14 48 L 26 54 L 24 42"
+              stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+          <div class="key-cap key-cap-md" id="key-cap">
+            <div class="glyph">⌥</div>
+            <div class="tag">right option</div>
+          </div>
+          <div class="hk-status-pill" id="hk-pill">
+            <span id="hk-pill-text">press and hold</span>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ─────────── Step 3: Done ─────────── -->
-  <div class="step body center" data-step="3">
+  <!-- ─────────── Step 4: Done ─────────── -->
+  <div class="step body center" data-step="4">
     <div class="done-mark">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none">
         <path d="M5 12l5 5L20 7" stroke="var(--accent-ink)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -498,6 +688,7 @@
       <div class="dot"></div>
       <div class="dot"></div>
       <div class="dot"></div>
+      <div class="dot"></div>
     </div>
     <div class="actions" id="actions"></div>
   </div>
@@ -505,13 +696,20 @@
 
 <script>
 (() => {
-  const TOTAL = 4;
+  const TOTAL = 5;
   const state = {
     step: 0,
     micGranted: false,
     axGranted: false,
     pressed: false,
     hasTried: false,
+    // Hotkey-step transcript state — { state: 'empty'|'recording'|'transcribing'|'filled', text: '...' }
+    transcript: { state: "empty", text: "" },
+    // Single combined setup state.
+    //   state: 'idle' | 'downloading' | 'warming' | 'ready' | 'error'
+    //   pct: 0..100 — overall, weighted across whisper + llm
+    //   status: human-readable line shown above the bar
+    setup: { state: "idle", pct: 0, status: "Ready when you are." },
   };
 
   function send(name, payload) {
@@ -555,8 +753,21 @@
       addBtn("primary", "Continue", { disabled: !ready, onClick: next });
     } else if (state.step === 2) {
       addBtn("ghost", "Back", { onClick: back });
-      addBtn("primary", "Continue", { disabled: !state.hasTried, onClick: next });
+      const s = state.setup.state;
+      if (s === "ready") {
+        addBtn("primary", "Continue", { onClick: next });
+      } else if (s === "downloading" || s === "warming") {
+        addBtn("primary", "Continue", { disabled: true });
+      } else if (s === "error") {
+        addBtn("primary", "Retry", { onClick: () => send("start_download") });
+      } else {
+        // idle
+        addBtn("primary", "Download", { onClick: () => send("start_download") });
+      }
     } else if (state.step === 3) {
+      addBtn("ghost", "Back", { onClick: back });
+      addBtn("primary", "Continue", { disabled: !state.hasTried, onClick: next });
+    } else if (state.step === 4) {
       addBtn("ghost", "Back", { onClick: back });
       addBtn("primary", "Start dictating", { onClick: () => send("finish") });
     }
@@ -625,6 +836,93 @@
     renderPermRow("ax", state.axGranted);
   }
 
+  // ---------- Setup card (single combined progress) ----------
+
+  const setupCard   = document.getElementById("setup-card");
+  const setupFill   = document.getElementById("setup-fill");
+  const setupStatus = document.getElementById("setup-status");
+  const setupPct    = document.getElementById("setup-pct");
+  const setupPep    = document.getElementById("setup-pep");
+
+  // Rotating reassurance lines shown under the bar during download.
+  // Kept light — it's flavor, not load-bearing UX.
+  const PEP_DOWNLOADING = [
+    "Hang tight — first run pulls a few gigabytes once.",
+    "The progress bar is honest, just shy. It'll catch up.",
+    "Brewing a tiny on-device speech model.",
+    "No data is leaving your Mac. We're just fetching the brain.",
+    "This is the slow part. Streaming is going to feel snappy in a minute.",
+    "Almost there — bandwidth permitting.",
+  ];
+  const PEP_WARMING = [
+    "Loading the model into memory…",
+    "Stretching its vocal cords.",
+    "Just a few more seconds.",
+  ];
+
+  let pepTimer = null;
+  let pepIdx = 0;
+  function setPepText(t) {
+    if (!setupPep) return;
+    setupPep.classList.remove("show");
+    setTimeout(() => {
+      setupPep.textContent = t;
+      setupPep.classList.add("show");
+    }, 240);
+  }
+  function startPep(lines, intervalMs) {
+    stopPep();
+    pepIdx = 0;
+    setPepText(lines[0]);
+    pepTimer = setInterval(() => {
+      pepIdx = (pepIdx + 1) % lines.length;
+      setPepText(lines[pepIdx]);
+    }, intervalMs);
+  }
+  function stopPep() {
+    if (pepTimer) { clearInterval(pepTimer); pepTimer = null; }
+  }
+  function clearPep() {
+    stopPep();
+    if (setupPep) {
+      setupPep.classList.remove("show");
+      setTimeout(() => { if (setupPep) setupPep.textContent = ""; }, 280);
+    }
+  }
+
+  let lastPepState = null;
+  function syncPep(s) {
+    if (s === lastPepState) return;
+    lastPepState = s;
+    if (s === "downloading") startPep(PEP_DOWNLOADING, 4500);
+    else if (s === "warming") startPep(PEP_WARMING, 2200);
+    else clearPep();
+  }
+
+  function renderSetup() {
+    const s = state.setup || { state: "idle", pct: 0, status: "Ready when you are." };
+    if (setupCard) setupCard.dataset.state = s.state;
+
+    if (setupStatus) setupStatus.textContent = s.status || "";
+
+    if (setupFill) {
+      // During the indeterminate warming phase the CSS overrides width;
+      // for normal states we drive it from pct.
+      if (s.state !== "warming") {
+        setupFill.style.width = Math.max(0, Math.min(100, s.pct || 0)) + "%";
+      }
+    }
+    if (setupPct) {
+      if (s.state === "ready")     setupPct.textContent = "Ready";
+      else if (s.state === "error")setupPct.textContent = "Error";
+      else if (s.state === "warming") setupPct.textContent = "";
+      else if (s.state === "idle") setupPct.textContent = "";
+      else setupPct.textContent = Math.round(s.pct || 0) + "%";
+    }
+
+    syncPep(s.state);
+  }
+
   // ---------- Hotkey capture ----------
 
   const keyCap = document.getElementById("key-cap");
@@ -638,14 +936,20 @@
   function press() {
     if (state.pressed) return;
     state.pressed = true;
+    state.transcript = { state: "recording", text: "" };
     renderHotkey();
+    renderTranscript();
+    send("start_record");
   }
   function release() {
     if (!state.pressed) return;
     state.pressed = false;
     state.hasTried = true;
+    state.transcript = { state: "transcribing", text: "" };
     renderHotkey();
+    renderTranscript();
     renderFooter();
+    send("stop_record");
   }
 
   // The real hotkey is Right Option. Only react on the hotkey step so the
@@ -655,13 +959,13 @@
     return (ev.code === "AltRight") || (ev.key === "Alt" && ev.location === 2);
   }
   window.addEventListener("keydown", (ev) => {
-    if (state.step !== 2) return;
+    if (state.step !== 3) return;
     if (!isRightOption(ev)) return;
     ev.preventDefault();
     press();
   });
   window.addEventListener("keyup", (ev) => {
-    if (state.step !== 2) return;
+    if (state.step !== 3) return;
     if (!isRightOption(ev)) return;
     ev.preventDefault();
     release();
@@ -691,6 +995,50 @@
     waveRAF = null;
   }
 
+  // ---------- Transcript box ----------
+
+  const tbox = document.getElementById("hk-textbox");
+  const tboxBody = document.getElementById("hk-textbox-body");
+
+  function renderTranscript() {
+    if (!tbox || !tboxBody) return;
+    const t = state.transcript || { state: "empty", text: "" };
+    tbox.dataset.state = t.state;
+
+    if (t.state === "empty") {
+      tboxBody.innerHTML =
+        '<span class="hk-caret"></span>' +
+        '<span class="hk-placeholder">Your text will appear here</span>';
+    } else if (t.state === "recording") {
+      // Pure caret while the mic is open — feels like you're typing.
+      tboxBody.innerHTML = '<span class="hk-caret"></span>';
+    } else if (t.state === "transcribing") {
+      tboxBody.innerHTML =
+        '<span class="hk-caret"></span>' +
+        '<span class="hk-placeholder">Transcribing — be there in a second…</span>';
+    } else if (t.state === "filled") {
+      const text = (t.text || "").trim();
+      if (text) {
+        tboxBody.innerHTML =
+          '<span class="hk-caret"></span>' +
+          '<span class="hk-transcript">' + escapeHtml(text) + '</span>';
+      } else {
+        tboxBody.innerHTML =
+          '<span class="hk-caret"></span>' +
+          '<span class="hk-transcript empty">didn\'t catch anything — try again?</span>';
+      }
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function renderHotkey() {
     keyCap.classList.toggle("pressed", state.pressed);
     pill.classList.remove("rec", "done");
@@ -717,11 +1065,29 @@
 
   // ---------- Python → JS bridge ----------
   window.openflow = {
+    setSetup(patch) {
+      // patch: { state?, pct?, status? } — merged into state.setup.
+      if (!patch) return;
+      state.setup = Object.assign({}, state.setup, patch);
+      renderSetup();
+      // Step-2 Continue button depends on setup state.
+      if (state.step === 2) renderFooter();
+    },
     setState(patch) {
       Object.assign(state, patch || {});
       renderStep();
       renderPerms();
       renderHotkey();
+    },
+    setTranscript(payload) {
+      // payload: { text: '...' } — Python pushes after Whisper returns.
+      const text = (payload && typeof payload.text === "string") ? payload.text : "";
+      state.transcript = { state: "filled", text };
+      state.hasTried = true;
+      renderTranscript();
+      // Update the pill so it goes from "transcribing…" → "got it".
+      renderHotkey();
+      if (state.step === 3) renderFooter();
     },
     goto(step) {
       state.step = Math.max(0, Math.min(TOTAL - 1, step | 0));
@@ -732,7 +1098,9 @@
   // Initial render
   renderStep();
   renderPerms();
+  renderSetup();
   renderHotkey();
+  renderTranscript();
   send("ready");
 })();
 </script>
