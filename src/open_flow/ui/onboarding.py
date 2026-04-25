@@ -335,7 +335,7 @@ class OnboardingWizard:
         elif name == "step":
             # Purely informational — JS owns the current step.
             pass
-        elif name == "skip" or name == "finish":
+        elif name == "finish":
             self._finish()
         else:
             logger.debug("Unhandled web message: %s", name)

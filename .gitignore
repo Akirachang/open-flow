@@ -25,4 +25,9 @@ build/
 .vscode/
 .idea/
 
+# PyInstaller artifacts (warn/xref logs live in build/ but .bak may appear anywhere)
+*.spec.bak
+warn-*.txt
+xref-*.html
+
 CLAUDE.md

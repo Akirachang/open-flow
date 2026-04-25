@@ -762,7 +762,6 @@
     };
 
     if (state.step === 0) {
-      addBtn("ghost", "Skip",  { onClick: () => send("skip") });
       addBtn("primary", "Begin →", { onClick: next });
     } else if (state.step === 1) {
       addBtn("ghost", "Back", { onClick: back });
