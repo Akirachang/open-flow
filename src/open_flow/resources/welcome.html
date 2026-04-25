@@ -366,48 +366,53 @@
     min-width: 0;
     max-width: 360px;
     padding: 4px 0;
+    position: relative;
   }
-  .hk-typer-body {
+  .hk-editor {
     min-height: 64px;
-    font-family: var(--font-serif);
-    font-size: 20px;
-    line-height: 1.45;
-    color: var(--ink);
-  }
-  .hk-placeholder {
-    font-family: var(--font-serif);
-    font-style: italic;
-    font-size: 17px;
-    color: var(--subtle);
-  }
-  .hk-typer[data-state="filled"] .hk-placeholder,
-  .hk-typer[data-state="recording"] .hk-placeholder { display: none; }
-
-  .hk-caret {
-    display: inline-block;
-    width: 2px;
-    height: 1.05em;
-    margin: 0 1px;
-    background: var(--ink);
-    vertical-align: text-bottom;
-    animation: hk-caret-blink 1.05s steps(2) infinite;
-  }
-  @keyframes hk-caret-blink {
-    0%, 49%   { opacity: 1; }
-    50%, 100% { opacity: 0; }
-  }
-
-  .hk-transcript {
     font-family: var(--font-serif);
     font-size: 22px;
     line-height: 1.45;
     color: var(--ink);
+    outline: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    caret-color: var(--ink);
+    user-select: text;
+    -webkit-user-select: text;
+    transition: opacity 260ms ease, color 260ms ease;
   }
-  .hk-transcript.empty {
-    font-family: var(--font-serif);
-    font-style: italic;
+  .hk-editor[data-empty="1"]::before {
+    content: attr(data-placeholder);
+    font-size: 22px;
+    line-height: 1.45;
     color: var(--muted);
-    font-size: 18px;
+    pointer-events: none;
+  }
+  .hk-editor[data-locked="1"] {
+    caret-color: transparent;
+  }
+  .hk-typer[data-state="recording"] .hk-editor {
+    color: var(--muted);
+  }
+  .hk-typer[data-state="transcribing"] .hk-editor {
+    color: transparent;
+    background: linear-gradient(
+      100deg,
+      rgba(110,110,114,0.74) 0%,
+      rgba(154,154,158,0.92) 42%,
+      rgba(196,196,200,0.62) 50%,
+      rgba(154,154,158,0.92) 58%,
+      rgba(110,110,114,0.74) 100%
+    );
+    background-size: 260% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: hk-transcribing-shimmer 2.8s ease-in-out infinite;
+  }
+  @keyframes hk-transcribing-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
   }
 
   .hk-controls {
@@ -632,9 +637,17 @@
     <div class="hk-stage">
       <!-- left: fake target text box -->
       <div class="hk-typer" id="hk-textbox" data-state="empty">
-        <div class="hk-typer-body" id="hk-textbox-body">
-          <span class="hk-placeholder">Your text will appear here…</span><span class="hk-caret"></span>
-        </div>
+        <div
+          class="hk-editor"
+          id="hk-editor"
+          contenteditable="true"
+          role="textbox"
+          aria-label="Transcript text"
+          aria-multiline="true"
+          spellcheck="false"
+          data-placeholder="Your text will appear here"
+          data-empty="1"
+          data-locked="0"></div>
       </div>
 
       <div class="hk-controls">
@@ -718,6 +731,7 @@
   const stepEls = Array.from(document.querySelectorAll(".step"));
   const dotEls = Array.from(document.querySelectorAll("#dots .dot"));
   const actions = document.getElementById("actions");
+  let prevStep = state.step;
 
   function renderStep() {
     stepEls.forEach(el => {
@@ -725,6 +739,14 @@
     });
     dotEls.forEach((d, i) => d.classList.toggle("current", i === state.step));
     renderFooter();
+    if (state.step === 3 && prevStep !== 3) {
+      requestAnimationFrame(() => {
+        if (state.transcript.state !== "recording" && state.transcript.state !== "transcribing") {
+          focusEditorEnd();
+        }
+      });
+    }
+    prevStep = state.step;
   }
 
   function renderFooter() {
@@ -922,9 +944,7 @@
 
   const keyCap = document.getElementById("key-cap");
   const pill = document.getElementById("hk-pill");
-  const pillText = document.getElementById("hk-pill-text");
   const arrow = document.getElementById("hk-arrow");
-  const capture = document.getElementById("hk-capture");
 
   const BARS = 18;
 
@@ -952,7 +972,6 @@
   // a fast Whisper response doesn't blink past the user.
   const TRANSCRIBING_MIN_MS = 700;
   let transcribingShownAt = 0;
-  let pendingTranscript = null;
   let pendingTranscriptTimer = null;
 
   // The real hotkey is Right Option. Only react on the hotkey step so the
@@ -1001,44 +1020,81 @@
   // ---------- Transcript box ----------
 
   const tbox = document.getElementById("hk-textbox");
-  const tboxBody = document.getElementById("hk-textbox-body");
+  const editor = document.getElementById("hk-editor");
+  let suppressEditorInput = false;
+
+  function normalizeText(text) {
+    return String(text || "").replace(/\u00A0/g, " ").replace(/\r/g, "");
+  }
+
+  function setEditorLocked(locked) {
+    if (!editor) return;
+    editor.contentEditable = locked ? "false" : "true";
+    editor.dataset.locked = locked ? "1" : "0";
+  }
+
+  function updateEditorEmptyFlag(text) {
+    if (!editor) return;
+    editor.dataset.empty = text.trim().length ? "0" : "1";
+  }
+
+  function setEditorText(text, moveCaret) {
+    if (!editor) return;
+    const normalized = normalizeText(text);
+    suppressEditorInput = true;
+    editor.textContent = normalized;
+    suppressEditorInput = false;
+    updateEditorEmptyFlag(normalized);
+    if (moveCaret) focusEditorEnd();
+  }
+
+  function focusEditorEnd() {
+    if (!editor || state.step !== 3) return;
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
 
   function renderTranscript() {
-    if (!tbox || !tboxBody) return;
+    if (!tbox || !editor) return;
     const t = state.transcript || { state: "empty", text: "" };
     tbox.dataset.state = t.state;
 
     if (t.state === "empty") {
-      tboxBody.innerHTML =
-        '<span class="hk-caret"></span>' +
-        '<span class="hk-placeholder">Your text will appear here</span>';
+      setEditorLocked(false);
+      setEditorText("", true);
     } else if (t.state === "recording") {
-      tboxBody.innerHTML =
-        '<span class="hk-placeholder">Talk to type — let go when done.</span>';
+      setEditorLocked(true);
+      setEditorText("Talk to type...", false);
     } else if (t.state === "transcribing") {
-      tboxBody.innerHTML =
-        '<span class="hk-placeholder">Transcribing — be there in a second…</span>';
+      setEditorLocked(true);
+      setEditorText("Transcribing, gimme a sec...", false);
     } else if (t.state === "filled") {
-      const text = (t.text || "").trim();
-      if (text) {
-        tboxBody.innerHTML =
-          '<span class="hk-caret"></span>' +
-          '<span class="hk-transcript">' + escapeHtml(text) + '</span>';
-      } else {
-        tboxBody.innerHTML =
-          '<span class="hk-caret"></span>' +
-          '<span class="hk-transcript empty">didn\'t catch anything — try again?</span>';
+      const text = normalizeText(t.text);
+      setEditorLocked(false);
+      setEditorText(text, true);
+      if (!text.trim()) {
+        state.transcript = { state: "empty", text: "" };
+        tbox.dataset.state = "empty";
       }
     }
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
+  if (editor) {
+    editor.addEventListener("input", () => {
+      if (suppressEditorInput) return;
+      if (state.transcript.state === "recording" || state.transcript.state === "transcribing") return;
+      const text = normalizeText(editor.textContent);
+      updateEditorEmptyFlag(text);
+      if (text.trim()) state.transcript = { state: "filled", text };
+      else state.transcript = { state: "empty", text: "" };
+      if (tbox) tbox.dataset.state = state.transcript.state;
+    });
   }
 
   function renderHotkey() {
@@ -1091,7 +1147,6 @@
         renderTranscript();
         renderHotkey();
         if (state.step === 3) renderFooter();
-        pendingTranscript = null;
         pendingTranscriptTimer = null;
       };
 
@@ -1100,7 +1155,6 @@
         clearTimeout(pendingTranscriptTimer);
         pendingTranscriptTimer = null;
       }
-      pendingTranscript = { text };
 
       const elapsed = transcribingShownAt
         ? performance.now() - transcribingShownAt
@@ -1127,5 +1181,3 @@
 </script>
 </body>
 </html>
-</content>
-</invoke>
