@@ -134,39 +134,18 @@ def _check_accessibility() -> bool:
 
 
 def _request_accessibility() -> bool:
-    """Trigger the native Accessibility sheet via AXIsProcessTrustedWithOptions.
+    """Open the Accessibility Privacy pane and return the current trusted value.
 
-    The sheet appears only when status is 'not determined'. If the user
-    previously denied, we fall back to opening the Privacy pane so they can
-    toggle the switch manually. Returns the *current* trusted value (not the
-    post-prompt one — the sheet is async).
+    We never call AXIsProcessTrustedWithOptions with kAXTrustedCheckOptionPrompt=True
+    because that triggers a modal event loop that blocks AppHelper callbacks,
+    preventing the poll and window-key observer from detecting when the user
+    grants access. Instead we open System Settings directly and rely on the
+    poll / window-focus observer to pick up the grant.
     """
-    try:
-        from ApplicationServices import (
-            AXIsProcessTrusted,
-            AXIsProcessTrustedWithOptions,
-            kAXTrustedCheckOptionPrompt,
-        )
-    except Exception as exc:
-        logger.debug("AX APIs unavailable: %s", exc)
-        _open_privacy_pane("ax")
-        return False
-
-    if AXIsProcessTrusted():
+    if _check_accessibility():
         return True
-
-    # Show the system sheet. If a prior denial means the sheet won't appear,
-    # also nudge the user toward the Privacy pane.
-    try:
-        options = {kAXTrustedCheckOptionPrompt: True}
-        trusted = bool(AXIsProcessTrustedWithOptions(options))
-    except Exception as exc:
-        logger.debug("AXIsProcessTrustedWithOptions failed: %s", exc)
-        trusted = False
-
-    if not trusted:
-        _open_privacy_pane("ax")
-    return trusted
+    _open_privacy_pane("ax")
+    return False
 
 
 # ------------------------------------------------------------------ #
