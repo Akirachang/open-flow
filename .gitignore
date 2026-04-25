@@ -25,4 +25,13 @@ build/
 .vscode/
 .idea/
 
+# PyInstaller artifacts (warn/xref logs live in build/ but .bak may appear anywhere)
+*.spec.bak
+warn-*.txt
+xref-*.html
+
+# Generated packaging assets (produced by make_icon.py)
+packaging/OpenFlow.iconset/
+packaging/OpenFlow.icns
+
 CLAUDE.md

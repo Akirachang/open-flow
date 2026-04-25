@@ -5,8 +5,17 @@ from __future__ import annotations
 import logging
 import queue
 import time
+import urllib.request
+import urllib.error
 from threading import Thread
 from typing import Callable
+
+# ── Update check ─────────────────────────────────────────────────────────────
+# Replace YOUR_USERNAME with your GitHub username once the repo is public.
+_GITHUB_RELEASES_URL = (
+    "https://api.github.com/repos/YOUR_USERNAME/open-flow/releases/latest"
+)
+_CURRENT_VERSION = "0.1.0"
 
 import rumps
 
@@ -74,6 +83,7 @@ class OpenFlowApp(rumps.App):
         self._drain_timer.start()
 
         Thread(target=self._load_models, daemon=True).start()
+        Thread(target=self._check_for_update, daemon=True).start()
 
     # ------------------------------------------------------------------ #
     # Startup                                                              #
@@ -257,6 +267,30 @@ class OpenFlowApp(rumps.App):
             except Exception:
                 logger.exception("Error in main-thread callback")
         self._hud.tick()
+
+    def _check_for_update(self) -> None:
+        """Check GitHub Releases for a newer version. Runs once on startup."""
+        if "YOUR_USERNAME" in _GITHUB_RELEASES_URL:
+            return  # placeholder URL — skip until repo is configured
+        try:
+            req = urllib.request.Request(
+                _GITHUB_RELEASES_URL,
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenFlow"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                import json
+                data = json.loads(resp.read())
+            latest = data.get("tag_name", "").lstrip("v")
+            if latest and latest != _CURRENT_VERSION:
+                _call_on_main_thread(
+                    lambda: rumps.notification(
+                        title="Open Flow",
+                        subtitle=f"Version {latest} is available",
+                        message="Visit github.com/YOUR_USERNAME/open-flow/releases to update.",
+                    )
+                )
+        except Exception:
+            pass  # silently ignore — update check is best-effort
 
     def _set_status(self, message: str) -> None:
         self._status_item.title = f"Status: {message}"
