@@ -121,8 +121,13 @@ def _request_mic_permission(on_result: Callable[[bool], None]) -> None:
 
 def _check_accessibility() -> bool:
     try:
-        from ApplicationServices import AXIsProcessTrusted
-        return bool(AXIsProcessTrusted())
+        from ApplicationServices import (
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+        result = bool(AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: False}))
+        logger.debug("AX trusted: %s", result)
+        return result
     except Exception as exc:
         logger.debug("AX permission check unavailable: %s", exc)
         return False
@@ -369,6 +374,7 @@ class OnboardingWizard:
         moment the user clicks back on our window — a reliable trigger point.
         """
         def _on_key(_notification) -> None:
+            logger.info("Window became key — re-checking permissions")
             if self._ready:
                 self._push_state({
                     "micGranted": _check_mic_permission(),
