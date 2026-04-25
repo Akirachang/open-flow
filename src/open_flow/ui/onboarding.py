@@ -119,17 +119,33 @@ def _request_mic_permission(on_result: Callable[[bool], None]) -> None:
     )
 
 
+_kAXErrorAPIDisabled = -25211  # AX not granted at OS level
+
+
 def _check_accessibility() -> bool:
+    """Check AX by making a real API call rather than querying the permission.
+
+    AXIsProcessTrustedWithOptions caches its result within the process and
+    won't reflect a grant until the app restarts. Calling an actual AX
+    function bypasses that cache: kAXErrorAPIDisabled means not trusted,
+    any other return code means access is live.
+    """
     try:
         from ApplicationServices import (
-            AXIsProcessTrustedWithOptions,
-            kAXTrustedCheckOptionPrompt,
+            AXUIElementCreateSystemWide,
+            AXUIElementCopyAttributeValue,
         )
-        result = bool(AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: False}))
-        logger.debug("AX trusted: %s", result)
+        system = AXUIElementCreateSystemWide()
+        err, _ = AXUIElementCopyAttributeValue(system, "AXFocusedApplication", None)
+        result = int(err) != _kAXErrorAPIDisabled
+        logger.debug("AX live check: err=%s trusted=%s", err, result)
         return result
     except Exception as exc:
-        logger.debug("AX permission check unavailable: %s", exc)
+        logger.debug("AX live check unavailable (%s), falling back", exc)
+    try:
+        from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+        return bool(AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: False}))
+    except Exception:
         return False
 
 
