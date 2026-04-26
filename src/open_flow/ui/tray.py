@@ -7,6 +7,7 @@ import queue
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 from threading import Thread
 from typing import Callable
 
@@ -38,15 +39,73 @@ def _call_on_main_thread(fn: Callable[[], None]) -> None:
     _main_thread_queue.put(fn)
 
 
-_ICON_IDLE = "◉"
-_ICON_RECORDING = "🔴"
-_ICON_PROCESSING = "⏳"
-_ICON_ERROR = "⚠️"
+# Menu-bar state is conveyed by a small text suffix next to the waveform icon.
+# The icon itself is always the same template waveform that appears as the
+# app's Dock / Finder icon, so the brand stays consistent.
+_TITLE_IDLE = ""
+_TITLE_RECORDING = " ●"
+_TITLE_PROCESSING = " …"
+_TITLE_ERROR = " !"
+
+
+def _menubar_icon_path() -> str:
+    """Return path to the template waveform PNG, generating it if missing.
+
+    Drawn with the same proportions as the app icon (`packaging/make_icon.py`)
+    but on a transparent background so macOS can render it as a template
+    image — auto-tinted for light/dark menu bars.
+    """
+    cache_dir = Path.home() / "Library" / "Caches" / "open_flow"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out = cache_dir / "menubar_template.png"
+    if out.exists():
+        return str(out)
+
+    from AppKit import (
+        NSBezierPath,
+        NSBitmapImageRep,
+        NSColor,
+        NSImage,
+        NSMakeRect,
+        NSPNGFileType,
+    )
+
+    size = 44  # 22pt @2x — matches macOS menu-bar template recommendation
+    img = NSImage.alloc().initWithSize_((size, size))
+    img.lockFocus()
+
+    NSColor.blackColor().setFill()
+    heights = [0.40, 0.65, 0.85, 0.65, 0.40]
+    bar_w = size * 0.10
+    gap = size * 0.07
+    total_w = len(heights) * bar_w + (len(heights) - 1) * gap
+    x0 = (size - total_w) / 2
+    for i, h in enumerate(heights):
+        bh = size * h
+        bx = x0 + i * (bar_w + gap)
+        by = (size - bh) / 2
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(bx, by, bar_w, bh), bar_w / 2, bar_w / 2
+        ).fill()
+
+    img.unlockFocus()
+
+    rep = NSBitmapImageRep.imageRepWithData_(img.TIFFRepresentation())
+    rep.representationUsingType_properties_(NSPNGFileType, None).writeToFile_atomically_(
+        str(out), True
+    )
+    return str(out)
 
 
 class OpenFlowApp(rumps.App):
     def __init__(self) -> None:
-        super().__init__(name="Open Flow", title=_ICON_IDLE, quit_button=None)
+        super().__init__(
+            name="Open Flow",
+            title=_TITLE_IDLE,
+            icon=_menubar_icon_path(),
+            template=True,
+            quit_button=None,
+        )
 
         self._cfg = cfg_module.load()
         self._recorder = AudioRecorder(
@@ -94,11 +153,11 @@ class OpenFlowApp(rumps.App):
             _call_on_main_thread(lambda: (setattr(self, "title", title), self._set_status(status)))
 
         try:
-            _ui(_ICON_IDLE, "Loading Whisper…")
+            _ui(_TITLE_IDLE, "Loading Whisper…")
             self._transcriber.load()
 
             if self._cfg.llm_enabled:
-                _ui(_ICON_IDLE, "Loading LLM…")
+                _ui(_TITLE_IDLE, "Loading LLM…")
                 self._cleaner = Cleaner(self._cfg)
                 self._cleaner.load()
                 self._pipeline.set_cleaner(self._cleaner)
@@ -106,11 +165,11 @@ class OpenFlowApp(rumps.App):
             self._start_hotkey()
             self._ready = True
             _call_on_main_thread(self._hud.build)
-            _ui(_ICON_IDLE, f"Idle — hold {self._cfg.hotkey} to dictate")
+            _ui(_TITLE_IDLE, f"Idle — hold {self._cfg.hotkey} to dictate")
 
         except FileNotFoundError as exc:
             logger.error("Model not found: %s", exc)
-            _ui(_ICON_ERROR, "Error: model missing — run download_models.py")
+            _ui(_TITLE_ERROR, "Error: model missing — run download_models.py")
             rumps.notification(
                 title="Open Flow",
                 subtitle="Model not found",
@@ -118,7 +177,7 @@ class OpenFlowApp(rumps.App):
             )
         except Exception as exc:
             logger.exception("Startup error")
-            _ui(_ICON_ERROR, f"Error: {exc}")
+            _ui(_TITLE_ERROR, f"Error: {exc}")
 
     def _start_hotkey(self) -> None:
         self._hotkey = HotkeyListener(
@@ -140,7 +199,7 @@ class OpenFlowApp(rumps.App):
         self._recorder.start()
 
         def _ui() -> None:
-            self.title = _ICON_RECORDING
+            self.title = _TITLE_RECORDING
             self._set_status("Recording…")
             self._hud.show()
 
@@ -155,7 +214,7 @@ class OpenFlowApp(rumps.App):
         self._recorder.save_wav(audio, LAST_WAV)
 
         def _ui() -> None:
-            self.title = _ICON_PROCESSING
+            self.title = _TITLE_PROCESSING
             self._set_status("Transcribing…")
             self._hud.show_loading()
 
@@ -183,21 +242,21 @@ class OpenFlowApp(rumps.App):
         if result.injected and result.text:
             total = time.monotonic() - self._start_time
             preview = result.text[:50] + ("…" if len(result.text) > 50 else "")
-            _finish(_ICON_IDLE, f"Done ({total:.1f}s) — {preview}")
+            _finish(_TITLE_IDLE, f"Done ({total:.1f}s) — {preview}")
             return
 
         reason = result.skipped_reason
         if reason == "no_speech":
-            _finish(_ICON_IDLE, "No speech detected")
+            _finish(_TITLE_IDLE, "No speech detected")
         elif reason == "password_field":
             rumps.notification(
                 title="Open Flow",
                 subtitle="Skipped",
                 message="Password fields are not supported.",
             )
-            _finish(_ICON_IDLE, "Skipped password field")
+            _finish(_TITLE_IDLE, "Skipped password field")
         else:
-            _finish(_ICON_ERROR, f"Error: {result.error or 'unknown'}")
+            _finish(_TITLE_ERROR, f"Error: {result.error or 'unknown'}")
 
     # ------------------------------------------------------------------ #
     # Menu actions                                                         #
