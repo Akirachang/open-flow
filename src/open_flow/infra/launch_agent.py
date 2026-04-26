@@ -47,7 +47,15 @@ def _running_from_applications() -> bool:
 
 
 def register() -> None:
-    """Write the LaunchAgent plist and load it. No-op outside /Applications."""
+    """Write the LaunchAgent plist. No-op outside /Applications.
+
+    We deliberately do NOT call `launchctl load` here. Combined with
+    `RunAtLoad=true` in the plist, that would immediately spawn a second
+    instance of Open Flow on top of the running one — which has been seen
+    to surface as a duplicate onboarding wizard. Files written to
+    `~/Library/LaunchAgents` are picked up automatically by launchd at the
+    user's next login, which is exactly the auto-start behaviour we want.
+    """
     if not _running_from_applications():
         logger.debug("LaunchAgent: skipped (not running from /Applications)")
         return
@@ -65,21 +73,7 @@ def register() -> None:
         ),
         encoding="utf-8",
     )
-
-    try:
-        # Unload first in case of a stale entry from a previous install
-        subprocess.run(
-            ["launchctl", "unload", str(_PLIST)],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["launchctl", "load", "-w", str(_PLIST)],
-            check=True,
-            capture_output=True,
-        )
-        logger.info("LaunchAgent registered: %s", _PLIST)
-    except subprocess.CalledProcessError as exc:
-        logger.warning("LaunchAgent load failed: %s", exc)
+    logger.info("LaunchAgent plist written: %s (loads at next login)", _PLIST)
 
 
 def unregister() -> None:
