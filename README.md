@@ -14,17 +14,27 @@ Open Flow is a macOS menu-bar app that lets you dictate text into any applicatio
 
 ## 🚀 Installation
 
-### Requirements
+### One-line install (recommended)
 
-- macOS, Apple Silicon (M1 or newer)
-- Python 3.11+
-- [`uv`](https://github.com/astral-sh/uv) package manager
+```bash
+curl -fsSL https://raw.githubusercontent.com/Akirachang/open-flow/main/install.sh | bash
+```
 
-### Setup
+Downloads the latest signed DMG, drops `Open Flow.app` into `/Applications`, and launches it. The first-run wizard handles permissions and model downloads.
+
+To uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Akirachang/open-flow/main/uninstall.sh | bash
+```
+
+### Run from source (development)
+
+Requirements: macOS on Apple Silicon (M1+), Python 3.11+, and [`uv`](https://github.com/astral-sh/uv).
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-username/open-flow.git
+git clone https://github.com/Akirachang/open-flow.git
 cd open-flow
 
 # 2. Install dependencies (builds llama-cpp-python with Metal support)
