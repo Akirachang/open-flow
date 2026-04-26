@@ -8,6 +8,7 @@ APP_DEST="/Applications/$APP_NAME.app"
 LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.openflow.app.plist"
 CONFIG_DIR="$HOME/.config/open_flow"
 CACHE_DIR="$HOME/.cache/open_flow"
+RUNTIME_DIR="$HOME/Library/Caches/open_flow"
 
 print_step() { printf "\n\033[1m%s\033[0m\n" "$1"; }
 print_ok()   { printf "  \033[32m✓\033[0m  %s\n" "$1"; }
@@ -51,10 +52,14 @@ printf "  (Models are ~3.5 GB — say yes to free the space)\n"
 printf "  [y/N] "
 read -r ANSWER </dev/tty || ANSWER="n"
 
-if [[ "${ANSWER,,}" == "y" ]]; then
+# Lower-case via tr — bash 3.2 (macOS default) lacks ${VAR,,}.
+ANSWER_LC=$(printf '%s' "$ANSWER" | tr '[:upper:]' '[:lower:]')
+
+if [[ "$ANSWER_LC" == "y" || "$ANSWER_LC" == "yes" ]]; then
   print_step "Removing user data"
-  [ -d "$CONFIG_DIR" ] && rm -rf "$CONFIG_DIR" && print_ok "Removed config ($CONFIG_DIR)" || print_skip "No config dir"
-  [ -d "$CACHE_DIR"  ] && rm -rf "$CACHE_DIR"  && print_ok "Removed cache ($CACHE_DIR)"  || print_skip "No cache dir"
+  [ -d "$CONFIG_DIR"  ] && rm -rf "$CONFIG_DIR"  && print_ok "Removed config ($CONFIG_DIR)"  || print_skip "No config dir"
+  [ -d "$CACHE_DIR"   ] && rm -rf "$CACHE_DIR"   && print_ok "Removed cache ($CACHE_DIR)"   || print_skip "No cache dir"
+  [ -d "$RUNTIME_DIR" ] && rm -rf "$RUNTIME_DIR" && print_ok "Removed runtime ($RUNTIME_DIR)" || print_skip "No runtime dir"
 else
   print_skip "Keeping settings and models"
 fi
