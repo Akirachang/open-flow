@@ -54,5 +54,10 @@ def load() -> Config:
 
 def save(cfg: Config) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with CONFIG_PATH.open("wb") as f:
+    # Atomic write: a concurrent reader (e.g. a second instance launched by
+    # launchd right after we save) must never observe a truncated file.
+    tmp = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    with tmp.open("wb") as f:
         tomli_w.dump(asdict(cfg), f)
+        f.flush()
+    tmp.replace(CONFIG_PATH)
