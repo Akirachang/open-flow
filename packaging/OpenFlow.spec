@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Open Flow."""
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
@@ -97,7 +99,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Open Flow.app",
-    icon=str(__import__("pathlib").Path(SPECPATH) / "OpenFlow.icns"),
+    icon=str(Path(SPECPATH) / "OpenFlow.icns"),
     bundle_identifier="com.openflow.app",
     info_plist={
         "CFBundleName": "Open Flow",
@@ -107,7 +109,6 @@ app = BUNDLE(
         "LSUIElement": True,
         "LSMinimumSystemVersion": "13.0",
         "NSMicrophoneUsageDescription": "Open Flow needs microphone access to transcribe your speech.",
-        "NSAppleEventsUsageDescription": "Open Flow uses Accessibility to type transcribed text into other apps.",
         "NSPrincipalClass": "NSApplication",
     },
 )
