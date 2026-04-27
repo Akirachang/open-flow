@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ #
 
 _W = 720
-_H = 520
+_H = 580
 
 _WELCOME_HTML = Path(__file__).resolve().parent.parent / "resources" / "welcome.html"
 
@@ -120,6 +120,70 @@ def _request_mic_permission(on_result: Callable[[bool], None]) -> None:
 
 
 _kAXErrorAPIDisabled = -25211  # AX not granted at OS level
+
+
+_kIOHIDRequestTypeListenEvent = 1
+_kIOHIDAccessTypeGranted = 0
+
+
+def _iokit():
+    """Lazily load IOKit and bind the IOHID access functions."""
+    import ctypes
+    import ctypes.util
+
+    path = ctypes.util.find_library("IOKit")
+    if not path:
+        return None
+    lib = ctypes.CDLL(path)
+    lib.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+    lib.IOHIDCheckAccess.restype = ctypes.c_uint32
+    lib.IOHIDRequestAccess.argtypes = [ctypes.c_uint32]
+    lib.IOHIDRequestAccess.restype = ctypes.c_bool
+    return lib
+
+
+def _check_input_monitoring() -> bool:
+    """Return True iff the running binary has Input Monitoring permission.
+
+    pynput's CGEventTap-based listener silently fails to receive events
+    without this permission on macOS 10.15+.
+    """
+    try:
+        lib = _iokit()
+        if lib is None:
+            return False
+        return lib.IOHIDCheckAccess(_kIOHIDRequestTypeListenEvent) == _kIOHIDAccessTypeGranted
+    except Exception as exc:
+        logger.debug("Input Monitoring check unavailable: %s", exc)
+        return False
+
+
+def _request_input_monitoring() -> bool:
+    """Trigger the Input Monitoring TCC prompt and return current grant state.
+
+    `IOHIDCheckAccess` only queries TCC, so the app never shows up in the
+    Input Monitoring list until something actively *requests* access.
+    `IOHIDRequestAccess` is the call that registers the app with TCC and
+    presents the system prompt the first time. Subsequent calls return the
+    user's recorded decision without prompting again — at which point we
+    open the pane so they can flip the toggle if they previously denied.
+    """
+    try:
+        lib = _iokit()
+        if lib is None:
+            _open_privacy_pane("input_monitoring")
+            return False
+        granted = bool(lib.IOHIDRequestAccess(_kIOHIDRequestTypeListenEvent))
+        if granted:
+            return True
+    except Exception as exc:
+        logger.debug("IOHIDRequestAccess failed: %s", exc)
+
+    # Either the prompt was declined / already-denied, or this is a re-grant
+    # attempt. Open the pane so the user can toggle the entry — by this point
+    # the app should already be in the list because IOHIDRequestAccess added it.
+    _open_privacy_pane("input_monitoring")
+    return False
 
 
 def _check_accessibility() -> bool:
@@ -235,6 +299,9 @@ class OnboardingWizard:
         self._demo_recorder = None
         self._demo_transcriber = None
         self._demo_start_time: float = 0.0
+        # Whether the configured hotkey requires Input Monitoring. Set when
+        # the wizard's "ready" message arrives (we read cfg.hotkey then).
+        self._im_required: bool = False
 
     # ------------------------------------------------------------------ #
     # Public                                                               #
@@ -308,9 +375,14 @@ class OnboardingWizard:
         logger.debug("web msg: %s %r", name, payload)
         if name == "ready":
             self._ready = True
+            from open_flow.core.hotkey import is_modifier_hotkey
+            im_required = not is_modifier_hotkey(self._cfg.hotkey)
+            self._im_required = im_required
             self._push_state({
                 "micGranted": _check_mic_permission(),
                 "axGranted": _check_accessibility(),
+                "imGranted": _check_input_monitoring() if im_required else True,
+                "imRequired": im_required,
             })
             # If the models are already on disk we can skip the Download
             # button and warm them straight away.
@@ -335,6 +407,10 @@ class OnboardingWizard:
                     self._push_state({"axGranted": bool(trusted)})
                 if not trusted:
                     self._poll_until_ax_granted()
+            elif key == "im":
+                granted = _request_input_monitoring()
+                if self._ready:
+                    self._push_state({"imGranted": bool(granted)})
             else:
                 _open_privacy_pane(key)
         elif name == "step":
@@ -398,7 +474,13 @@ class OnboardingWizard:
             # rather than going through AppHelper.callAfter (avoids double-hop).
             mic = _check_mic_permission()
             ax = _check_accessibility()
-            js = f"window.openflow && window.openflow.setState({json.dumps({'micGranted': bool(mic), 'axGranted': bool(ax)})});"
+            patch = {
+                "micGranted": bool(mic),
+                "axGranted": bool(ax),
+            }
+            if self._im_required:
+                patch["imGranted"] = bool(_check_input_monitoring())
+            js = f"window.openflow && window.openflow.setState({json.dumps(patch)});"
             self._web.evaluateJavaScript_completionHandler_(js, None)
 
         self._window_observer = NSNotificationCenter.defaultCenter()\
@@ -414,8 +496,8 @@ class OnboardingWizard:
     # ------------------------------------------------------------------ #
 
     def _start_permission_poll(self) -> None:
-        """Poll mic + AX every 500ms and push diffs to JS."""
-        last = {"mic": None, "ax": None}
+        """Poll mic + AX (+ Input Monitoring if needed) every 500ms and push diffs."""
+        last = {"mic": None, "ax": None, "im": None}
 
         def tick() -> None:
             if self._poll_stop.is_set():
@@ -429,6 +511,11 @@ class OnboardingWizard:
             if ax != last["ax"]:
                 last["ax"] = ax
                 patch["axGranted"] = bool(ax)
+            if self._im_required:
+                im = _check_input_monitoring()
+                if im != last["im"]:
+                    last["im"] = im
+                    patch["imGranted"] = bool(im)
             if patch and self._ready:
                 self._push_state(patch)
 
@@ -565,54 +652,79 @@ class OnboardingWizard:
         base_pct: float,
         weight: float,
         status: str,
+        max_attempts: int = 3,
     ) -> bool:
-        """Run an HF download in a sub-thread; poll disk and push combined pct."""
+        """Run an HF download in a sub-thread; poll disk and push combined pct.
+
+        Retries up to ``max_attempts`` times with exponential backoff. HF's
+        client resumes partial downloads automatically, so a retry after a
+        network blip picks up where it left off rather than restarting.
+        """
         try:
             from huggingface_hub import hf_hub_download, snapshot_download
         except Exception as exc:
             logger.error("huggingface_hub unavailable: %s", exc)
             return False
 
-        result: dict = {"err": None}
+        for attempt in range(1, max_attempts + 1):
+            result: dict = {"err": None}
 
-        def runner() -> None:
-            try:
-                if filename is None:
-                    snapshot_download(
-                        repo_id=repo,
-                        local_dir=str(target_dir),
-                        local_dir_use_symlinks=False,
-                    )
-                else:
-                    hf_hub_download(
-                        repo_id=repo, filename=filename, local_dir=str(target_dir)
-                    )
-            except Exception as exc:
-                result["err"] = exc
+            def runner() -> None:
+                try:
+                    if filename is None:
+                        snapshot_download(
+                            repo_id=repo,
+                            local_dir=str(target_dir),
+                            local_dir_use_symlinks=False,
+                        )
+                    else:
+                        hf_hub_download(
+                            repo_id=repo, filename=filename, local_dir=str(target_dir)
+                        )
+                except Exception as exc:
+                    result["err"] = exc
 
-        t = threading.Thread(target=runner, daemon=True, name=f"of-dl-{repo}")
-        t.start()
+            t = threading.Thread(target=runner, daemon=True, name=f"of-dl-{repo}-{attempt}")
+            t.start()
 
-        while t.is_alive():
-            local = self._estimate_pct(target_dir, expected_bytes)
-            combined = base_pct + (local / 100.0) * weight
-            self._push_setup({
-                "state": "downloading",
-                "status": status,
-                "pct": int(round(min(99.0, combined))),
-            })
-            t.join(timeout=0.5)
+            attempt_status = (
+                status if attempt == 1
+                else f"{status} (retry {attempt}/{max_attempts})"
+            )
+            while t.is_alive():
+                local = self._estimate_pct(target_dir, expected_bytes)
+                combined = base_pct + (local / 100.0) * weight
+                self._push_setup({
+                    "state": "downloading",
+                    "status": attempt_status,
+                    "pct": int(round(min(99.0, combined))),
+                })
+                t.join(timeout=0.5)
 
-        if result["err"] is not None:
-            logger.error("Model download failed (%s): %s", repo, result["err"])
-            return False
+            if result["err"] is None:
+                self._push_setup({
+                    "state": "downloading",
+                    "status": status,
+                    "pct": int(round(base_pct + weight)),
+                })
+                return True
 
-        self._push_setup({
-            "state": "downloading",
-            "status": status,
-            "pct": int(round(base_pct + weight)),
-        })
-        return True
+            logger.warning(
+                "Model download attempt %d/%d failed (%s): %s",
+                attempt, max_attempts, repo, result["err"],
+            )
+            if attempt < max_attempts:
+                # Exponential backoff: 2s, 4s. Tell the UI we're waiting.
+                wait_s = 2 ** attempt
+                self._push_setup({
+                    "state": "downloading",
+                    "status": f"Connection hiccup — retrying in {wait_s}s",
+                    "pct": int(round(base_pct + (self._estimate_pct(target_dir, expected_bytes) / 100.0) * weight)),
+                })
+                time.sleep(wait_s)
+
+        logger.error("Model download failed after %d attempts (%s)", max_attempts, repo)
+        return False
 
     @staticmethod
     def _estimate_pct(path: Path, expected_bytes: int) -> int:

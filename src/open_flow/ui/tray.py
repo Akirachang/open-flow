@@ -156,11 +156,32 @@ class OpenFlowApp(rumps.App):
             _ui(_TITLE_IDLE, "Loading Whisper…")
             self._transcriber.load()
 
+            # LLM cleanup is optional. If the model never finished downloading
+            # (or the user toggled it off), keep going with transcribe-only —
+            # the hotkey + Whisper still work, which is the whole product.
             if self._cfg.llm_enabled:
                 _ui(_TITLE_IDLE, "Loading LLM…")
-                self._cleaner = Cleaner(self._cfg)
-                self._cleaner.load()
-                self._pipeline.set_cleaner(self._cleaner)
+                try:
+                    self._cleaner = Cleaner(self._cfg)
+                    self._cleaner.load()
+                    self._pipeline.set_cleaner(self._cleaner)
+                except FileNotFoundError as exc:
+                    # The wizard's LLM download likely got interrupted. Kick
+                    # off a background re-download so the user gets cleanup
+                    # automatically once the network cooperates — no need to
+                    # re-walk the wizard.
+                    logger.warning("LLM model missing — auto-redownloading: %s", exc)
+                    self._cleaner = None
+                    self._pipeline.set_cleaner(None)
+                    Thread(
+                        target=self._redownload_llm_in_background,
+                        daemon=True,
+                        name="of-llm-redownload",
+                    ).start()
+                except Exception:
+                    logger.exception("LLM load failed — continuing without cleanup")
+                    self._cleaner = None
+                    self._pipeline.set_cleaner(None)
 
             self._start_hotkey()
             self._ready = True
@@ -168,16 +189,70 @@ class OpenFlowApp(rumps.App):
             _ui(_TITLE_IDLE, f"Idle — hold {self._cfg.hotkey} to dictate")
 
         except FileNotFoundError as exc:
-            logger.error("Model not found: %s", exc)
-            _ui(_TITLE_ERROR, "Error: model missing — run download_models.py")
+            logger.error("Whisper model not found: %s", exc)
+            _ui(_TITLE_ERROR, "Error: Whisper model missing")
             rumps.notification(
                 title="Open Flow",
-                subtitle="Model not found",
+                subtitle="Speech model not found",
                 message="Run: uv run python scripts/download_models.py",
             )
         except Exception as exc:
             logger.exception("Startup error")
             _ui(_TITLE_ERROR, f"Error: {exc}")
+
+    def _redownload_llm_in_background(self) -> None:
+        """Re-fetch the missing LLM model and attach the cleaner when done.
+
+        Retries with exponential backoff. Hugging Face resumes partial files,
+        so a transient blip during onboarding doesn't cost a full restart.
+        """
+        from huggingface_hub import hf_hub_download
+
+        repo = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+        target = self._cfg.llm_model_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        _call_on_main_thread(lambda: self._set_status("Re-downloading cleanup model…"))
+        rumps.notification(
+            title="Open Flow",
+            subtitle="Finishing setup",
+            message="Re-downloading the cleanup model in the background — dictation works in the meantime.",
+        )
+
+        for attempt in range(1, 4):
+            try:
+                hf_hub_download(
+                    repo_id=repo,
+                    filename=target.name,
+                    local_dir=str(target.parent),
+                )
+                logger.info("LLM re-download succeeded on attempt %d", attempt)
+                break
+            except Exception:
+                logger.exception("LLM re-download attempt %d failed", attempt)
+                if attempt == 3:
+                    _call_on_main_thread(
+                        lambda: self._set_status("Cleanup model unavailable — dictation OK")
+                    )
+                    return
+                time.sleep(2 ** attempt)
+
+        # Load the cleaner now that the file is on disk.
+        try:
+            cleaner = Cleaner(self._cfg)
+            cleaner.load()
+            self._cleaner = cleaner
+            self._pipeline.set_cleaner(cleaner)
+            _call_on_main_thread(
+                lambda: self._set_status(f"Idle — hold {self._cfg.hotkey} to dictate")
+            )
+            rumps.notification(
+                title="Open Flow",
+                subtitle="Cleanup model ready",
+                message="LLM cleanup is now active.",
+            )
+        except Exception:
+            logger.exception("LLM load failed after re-download")
 
     def _start_hotkey(self) -> None:
         self._hotkey = HotkeyListener(
@@ -301,12 +376,25 @@ class OpenFlowApp(rumps.App):
         if response.clicked and response.text.strip():
             new_key = response.text.strip()
             if new_key != self._cfg.hotkey:
+                from open_flow.core.hotkey import is_modifier_hotkey
                 self._cfg.hotkey = new_key
                 cfg_module.save(self._cfg)
                 if self._hotkey:
                     self._hotkey.stop()
                 self._start_hotkey()
                 self._set_status(f"Hotkey updated → {new_key}")
+                # Switching to a non-modifier hotkey (F13/F14/F15) requires
+                # Input Monitoring. Nudge the user to grant it now, since the
+                # listener will silently receive nothing without it.
+                if not is_modifier_hotkey(new_key):
+                    rumps.notification(
+                        title="Open Flow",
+                        subtitle="Grant Input Monitoring",
+                        message=(
+                            f"{new_key} is not a modifier key, so macOS needs "
+                            "Input Monitoring permission for it to work globally."
+                        ),
+                    )
 
     def _quit(self, _: rumps.MenuItem) -> None:
         if self._hotkey:

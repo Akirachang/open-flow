@@ -562,9 +562,9 @@
   <div class="step body" data-step="1">
     <div style="max-width:560px;">
       <div class="kicker">step one</div>
-      <div class="headline lg">Two quick permissions.</div>
-      <div class="tagline" style="margin-bottom:24px;">
-        Open Flow needs your microphone to hear you, and accessibility to hear the hotkey and paste the transcript into the focused app.
+      <div class="headline lg">Three quick permissions.</div>
+      <div class="tagline" style="margin-bottom:20px;">
+        Open Flow needs your microphone to hear you, accessibility to paste into the focused app, and input monitoring so the hotkey works system-wide.
       </div>
 
       <div id="perm-mic" class="perm-row">
@@ -590,13 +590,27 @@
         </div>
         <div class="perm-body">
           <div class="perm-title">Accessibility</div>
-          <div class="perm-sub">Listen for the hotkey and paste transcribed text</div>
+          <div class="perm-sub">Paste transcribed text into the focused app</div>
         </div>
         <button class="secondary" data-perm-open="ax">Grant</button>
       </div>
 
-      <div class="footnote" style="margin-top:14px;">
-        Accessibility is the one that lets us type for you. Nothing is ever sent off your Mac.
+      <div id="perm-im" class="perm-row">
+        <div class="perm-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <rect x="4" y="7" width="16" height="10" rx="2" stroke="var(--accent)" stroke-width="2"/>
+            <path d="M7 11h.01M10 11h.01M13 11h.01M16 11h.01M8 14h8" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="perm-body">
+          <div class="perm-title">Input Monitoring</div>
+          <div class="perm-sub">Detect Right Option being held in any app</div>
+        </div>
+        <button class="secondary" data-perm-open="im">Grant</button>
+      </div>
+
+      <div class="footnote" style="margin-top:12px;">
+        Nothing is ever sent off your Mac.
       </div>
     </div>
   </div>
@@ -709,6 +723,11 @@
     step: 0,
     micGranted: false,
     axGranted: false,
+    imGranted: false,
+    // Whether Input Monitoring is required for the configured hotkey.
+    // Modifier hotkeys (Right Option, etc.) don't need IM — Python sets this
+    // to false in that case and we hide the IM row entirely.
+    imRequired: true,
     pressed: false,
     hasTried: false,
     // Hotkey-step transcript state — { state: 'empty'|'recording'|'transcribing'|'filled', text: '...' }
@@ -765,7 +784,7 @@
       addBtn("primary", "Begin →", { onClick: next });
     } else if (state.step === 1) {
       addBtn("ghost", "Back", { onClick: back });
-      const ready = state.micGranted && state.axGranted;
+      const ready = state.micGranted && state.axGranted && (!state.imRequired || state.imGranted);
       addBtn("primary", "Continue", { disabled: !ready, onClick: next });
     } else if (state.step === 2) {
       addBtn("ghost", "Back", { onClick: back });
@@ -809,7 +828,11 @@
     },
     ax: {
       idle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2" stroke="var(--accent)" stroke-width="2"/><path d="M4 9h16M10 21v-7M14 21v-7M12 14v-5" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg>',
-      sub: "Listen for the hotkey and paste transcribed text",
+      sub: "Paste transcribed text into the focused app",
+    },
+    im: {
+      idle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="7" width="16" height="10" rx="2" stroke="var(--accent)" stroke-width="2"/><path d="M7 11h.01M10 11h.01M13 11h.01M16 11h.01M8 14h8" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/></svg>',
+      sub: "Detect Right Option being held in any app",
     },
   };
   const CHECK_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="var(--good)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -850,6 +873,13 @@
   function renderPerms() {
     renderPermRow("mic", state.micGranted);
     renderPermRow("ax", state.axGranted);
+    const imRow = document.getElementById("perm-im");
+    if (imRow) {
+      imRow.style.display = state.imRequired ? "" : "none";
+    }
+    if (state.imRequired) {
+      renderPermRow("im", state.imGranted);
+    }
   }
 
   // ---------- Setup card (single combined progress) ----------
