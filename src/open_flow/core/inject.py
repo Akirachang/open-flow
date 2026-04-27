@@ -11,6 +11,8 @@ from ApplicationServices import (
     AXUIElementCreateSystemWide,
     AXUIElementCopyAttributeValue,
 )
+
+from open_flow.infra.permissions import check_accessibility
 from Quartz import (
     CGEventCreateKeyboardEvent,
     CGEventPost,
@@ -21,9 +23,12 @@ from Quartz import (
 
 logger = logging.getLogger(__name__)
 
-# Virtual key code for 'v'
+# macOS virtual key codes (from <HIToolbox/Events.h>).
 _KEY_V = 0x09
-_PASTE_DELAY = 0.05   # seconds between clipboard set and Cmd+V
+_KEY_CMD = 0x37  # left Command
+
+_PASTE_DELAY = 0.05    # seconds between clipboard set and Cmd+V
+_KEY_DELAY = 0.01      # seconds between consecutive synthesized key events
 _RESTORE_DELAY = 0.25  # seconds before restoring original clipboard
 
 
@@ -40,13 +45,29 @@ def _set_clipboard(text: str) -> None:
 
 
 def _send_cmd_v() -> None:
-    src = CGEventCreateKeyboardEvent(None, _KEY_V, True)
-    CGEventSetFlags(src, kCGEventFlagMaskCommand)
-    CGEventPost(kCGHIDEventTap, src)
+    """Synthesize ⌘V with explicit Cmd-down / Cmd-up around V.
 
-    src = CGEventCreateKeyboardEvent(None, _KEY_V, False)
-    CGEventSetFlags(src, kCGEventFlagMaskCommand)
-    CGEventPost(kCGHIDEventTap, src)
+    Setting the Cmd flag on a lone V event is enough for AppKit text fields,
+    but Terminal, iTerm, Electron apps, and JetBrains IDEs only recognize
+    the shortcut when the modifier has its own keyDown/keyUp pair. Bracketing
+    V with real Cmd events makes this look like a genuine keystroke.
+    """
+    cmd_down = CGEventCreateKeyboardEvent(None, _KEY_CMD, True)
+    CGEventPost(kCGHIDEventTap, cmd_down)
+    time.sleep(_KEY_DELAY)
+
+    v_down = CGEventCreateKeyboardEvent(None, _KEY_V, True)
+    CGEventSetFlags(v_down, kCGEventFlagMaskCommand)
+    CGEventPost(kCGHIDEventTap, v_down)
+    time.sleep(_KEY_DELAY)
+
+    v_up = CGEventCreateKeyboardEvent(None, _KEY_V, False)
+    CGEventSetFlags(v_up, kCGEventFlagMaskCommand)
+    CGEventPost(kCGHIDEventTap, v_up)
+    time.sleep(_KEY_DELAY)
+
+    cmd_up = CGEventCreateKeyboardEvent(None, _KEY_CMD, False)
+    CGEventPost(kCGHIDEventTap, cmd_up)
 
 
 def _focused_element_is_secure() -> bool:
@@ -65,6 +86,16 @@ def _focused_element_is_secure() -> bool:
 
 def inject(text: str) -> bool:
     """Inject text into the focused app. Returns False if injection was skipped."""
+    if not check_accessibility():
+        logger.error(
+            "Accessibility permission not granted — synthesized Cmd+V will be "
+            "silently dropped. Re-grant in System Settings → Privacy → "
+            "Accessibility for this exact build (remove the stale entry first)."
+        )
+        # Still put the text on the clipboard so the user can paste manually.
+        _set_clipboard(text)
+        return False
+
     if _focused_element_is_secure():
         logger.warning("Focused element is a password field — skipping injection")
         return False
