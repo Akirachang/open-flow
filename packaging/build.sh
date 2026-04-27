@@ -20,9 +20,8 @@ echo "==> Generating icon..."
 uv run python packaging/make_icon.py
 
 # ── Build the .app ───────────────────────────────────────────────────────────
-echo "==> Installing PyInstaller..."
-uv add pyinstaller --quiet
-
+# PyInstaller is pinned in pyproject.toml; `uv run` resolves it from the
+# project env, no separate `uv add` step needed (which would mutate the lock).
 echo "==> Building .app with PyInstaller..."
 uv run pyinstaller packaging/OpenFlow.spec \
   --distpath "$DIST_DIR" \
@@ -35,6 +34,18 @@ if [ ! -d "$APP_BUNDLE" ]; then
 fi
 
 echo "==> Build succeeded: $APP_BUNDLE"
+
+# ── Ad-hoc code-sign ────────────────────────────────────────────────────────
+# Without a signature TCC won't keep an Input Monitoring / Accessibility
+# entry for the app — every rebuild looks like a brand-new binary and the
+# grant silently disappears. An ad-hoc signature (`-` identity) is enough
+# to give TCC a stable anchor; we're not Apple-notarizing yet.
+echo "==> Ad-hoc code-signing the bundle..."
+codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --verify --verbose=2 "$APP_BUNDLE" || {
+  echo "ERROR: codesign verification failed."
+  exit 1
+}
 
 # ── DMG creation ────────────────────────────────────────────────────────────
 if ! command -v create-dmg &>/dev/null; then
