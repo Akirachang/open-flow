@@ -3,18 +3,54 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import sys
 import threading
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
 
+def _setup_logging() -> None:
+    """Send logs to both stderr and ~/Library/Logs/OpenFlow.log.
+
+    Plain `basicConfig` only writes to stderr — which goes nowhere when the
+    .app is launched via Finder / `open`, so the log file ends up empty even
+    though things are happening. Adding a rotating file handler guarantees
+    we always have a transcript to debug from.
+    """
+    log_dir = Path.home() / "Library" / "Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "OpenFlow.log"
+
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    stderr = logging.StreamHandler()
+    stderr.setFormatter(fmt)
+    root.addHandler(stderr)
+
+    try:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2_000_000, backupCount=2, encoding="utf-8"
+        )
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+    except OSError:
+        # Logging fallback should never crash startup.
+        pass
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
+
+# Module-level reference keeps the lock fd alive for the lifetime of the
+# process. flock is released when the fd closes, so this must outlive main().
+_LOCK_FD: int | None = None
 
 
 def _acquire_single_instance_lock() -> bool:
@@ -27,6 +63,8 @@ def _acquire_single_instance_lock() -> bool:
     """
     import fcntl
 
+    global _LOCK_FD
+
     lock_dir = Path.home() / "Library" / "Caches" / "open_flow"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "openflow.lock"
@@ -36,8 +74,7 @@ def _acquire_single_instance_lock() -> bool:
     except (BlockingIOError, OSError) as exc:
         logger.info("Another Open Flow instance is running (%s) — exiting", exc)
         return False
-    # Keep fd open for the lifetime of the process so the lock holds.
-    _acquire_single_instance_lock._fd = fd  # type: ignore[attr-defined]
+    _LOCK_FD = fd
     return True
 
 
