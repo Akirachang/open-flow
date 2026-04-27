@@ -20,7 +20,7 @@ class Config:
     channels: int = 1
     whisper_model: str = "faster-distil-whisper-large-v3"
     whisper_compute_type: str = "int8"
-    llm_model: str = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+    llm_model: str = "qwen2.5-3b-instruct-q4_k_m.gguf"
     llm_enabled: bool = True
     llm_min_words: int = 10
     llm_min_seconds: float = 2.0
@@ -42,6 +42,14 @@ class Config:
         return self.models_path / self.llm_model
 
 
+# Hugging Face renamed this file to all-lowercase upstream, so the old
+# default 404s on download. Migrate any persisted config that still points
+# at the old name to the new one — silent and surgical.
+_LLM_RENAMES: dict[str, str] = {
+    "Qwen2.5-3B-Instruct-Q4_K_M.gguf": "qwen2.5-3b-instruct-q4_k_m.gguf",
+}
+
+
 def load() -> Config:
     if not CONFIG_PATH.exists():
         cfg = Config()
@@ -49,7 +57,12 @@ def load() -> Config:
         return cfg
     with CONFIG_PATH.open("rb") as f:
         data: dict[str, Any] = tomllib.load(f)
-    return Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
+    cfg = Config(**{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
+    new_name = _LLM_RENAMES.get(cfg.llm_model)
+    if new_name is not None:
+        cfg.llm_model = new_name
+        save(cfg)
+    return cfg
 
 
 def save(cfg: Config) -> None:

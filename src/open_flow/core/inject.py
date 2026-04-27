@@ -6,7 +6,7 @@ import logging
 import time
 from threading import Timer
 
-from AppKit import NSPasteboard, NSStringPboardType
+from AppKit import NSPasteboard, NSPasteboardTypeString
 from ApplicationServices import (
     AXUIElementCreateSystemWide,
     AXUIElementCopyAttributeValue,
@@ -29,14 +29,14 @@ _RESTORE_DELAY = 0.25  # seconds before restoring original clipboard
 
 def _get_clipboard() -> str:
     pb = NSPasteboard.generalPasteboard()
-    text = pb.stringForType_(NSStringPboardType)
+    text = pb.stringForType_(NSPasteboardTypeString)
     return text or ""
 
 
 def _set_clipboard(text: str) -> None:
     pb = NSPasteboard.generalPasteboard()
     pb.clearContents()
-    pb.setString_forType_(text, NSStringPboardType)
+    pb.setString_forType_(text, NSPasteboardTypeString)
 
 
 def _send_cmd_v() -> None:
