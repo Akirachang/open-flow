@@ -97,6 +97,14 @@ print_ok "Copied to /Applications"
 xattr -dr com.apple.quarantine "$APP_DEST" 2>/dev/null || true
 print_ok "Cleared security quarantine"
 
+# ── Clear stale TCC entry for our bundle ID ─────────────────────────────────
+# Ad-hoc-signed PyInstaller builds get a new cdhash on every rebuild, but TCC
+# pins the existing Accessibility grant to the old cdhash — so toggling the
+# switch in System Settings silently fails to register the new binary.
+# Targeted to com.openflow.app only; no other app's permissions are touched.
+tccutil reset Accessibility com.openflow.app >/dev/null 2>&1 || true
+print_ok "Reset Accessibility entry"
+
 # ── Launch ───────────────────────────────────────────────────────────────────
 print_step "Launching Open Flow"
 open "$APP_DEST"
