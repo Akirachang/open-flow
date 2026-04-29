@@ -180,7 +180,7 @@ class HUD:
             self._view.setTick_(self._tick)
         else:
             rms = self._current_rms
-            base = min(rms * 60, 1.0)
+            base = min(rms * 140, 1.0)
             phase = self._tick * 0.18
             for i in range(_BAR_COUNT):
                 t = i / (_BAR_COUNT - 1)
@@ -189,12 +189,12 @@ class HUD:
                 target = base * envelope * (0.7 + 0.3 * wave)
                 target = max(0.02, min(1.0, target))
                 cur = self._levels[i]
-                self._levels[i] = cur + (target - cur) * (0.25 if target > cur else 0.12)
+                self._levels[i] = cur + (target - cur) * (0.55 if target > cur else 0.22)
             self._view.setLevels_(list(self._levels))
 
     def push_audio(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
-        self._current_rms = max(rms, self._current_rms * 0.5)
+        self._current_rms = max(rms, self._current_rms * 0.25)
 
     def _ensure_window(self) -> None:
         if self._window is not None:
