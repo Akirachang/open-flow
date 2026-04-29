@@ -23,6 +23,12 @@ from AppKit import (
     NSWindow,
     NSWindowStyleMaskBorderless,
 )
+from Quartz import (
+    CATransaction,
+    CATransform3DConcat,
+    CATransform3DMakeScale,
+    CATransform3DMakeTranslation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +117,19 @@ class _WaveformView(NSView):
             ).fill()
 
 
-_FADE_IN_STEP = 0.15   # alpha added per tick (~4 frames to full opacity at 30Hz)
-_FADE_OUT_STEP = 0.10  # alpha removed per tick (~10 frames to invisible)
+_FADE_IN_STEP = 0.55   # alpha added per tick (~2 frames to full opacity at 30Hz)
+_FADE_OUT_STEP = 0.18  # alpha removed per tick (~6 frames to invisible)
+_APPEAR_FRAMES = 7     # spring-pop duration after show (~230ms)
+_APPEAR_START_SCALE = 0.55  # initial pop scale before easing up to 1.0
+
+
+def _ease_out_back(p: float) -> float:
+    """easeOutBack — overshoots above 1.0 then settles, gives a 'snap' feel."""
+    p = max(0.0, min(1.0, p))
+    c1 = 1.70158
+    c3 = c1 + 1
+    p1 = p - 1
+    return 1 + c3 * p1 * p1 * p1 + c1 * p1 * p1
 
 
 class HUD:
@@ -125,6 +142,7 @@ class HUD:
         self._tick: int = 0
         self._alpha: float = 0.0
         self._fading_out: bool = False
+        self._appear_tick: int = _APPEAR_FRAMES  # _APPEAR_FRAMES = "settled at 1.0"
 
     def build(self) -> None:
         self._ensure_window()
@@ -135,10 +153,12 @@ class HUD:
         self._levels = [0.05] * _BAR_COUNT
         self._current_rms = 0.0
         self._fading_out = False
+        self._appear_tick = 0
         if self._view:
             self._view.setState_(_STATE_RECORDING)
         if self._window:
             self._window.setAlphaValue_(0.0)
+            self._apply_pop_scale(_APPEAR_START_SCALE)
             self._window.orderFront_(None)
 
     def show_loading(self) -> None:
@@ -148,7 +168,9 @@ class HUD:
         if self._view:
             self._view.setState_(_STATE_LOADING)
         if self._window and not self._window.isVisible():
+            self._appear_tick = 0
             self._window.setAlphaValue_(0.0)
+            self._apply_pop_scale(_APPEAR_START_SCALE)
             self._window.orderFront_(None)
 
     def show(self) -> None:
@@ -176,6 +198,16 @@ class HUD:
             self._alpha = min(1.0, self._alpha + _FADE_IN_STEP)
             self._window.setAlphaValue_(self._alpha)
 
+        # Spring-pop scale during the appear phase
+        if self._appear_tick < _APPEAR_FRAMES:
+            self._appear_tick += 1
+            p = self._appear_tick / _APPEAR_FRAMES
+            eased = _ease_out_back(p)
+            scale = _APPEAR_START_SCALE + (1.0 - _APPEAR_START_SCALE) * eased
+            self._apply_pop_scale(scale)
+            if self._appear_tick >= _APPEAR_FRAMES:
+                self._apply_pop_scale(1.0)
+
         if self._state == _STATE_LOADING:
             self._view.setTick_(self._tick)
         else:
@@ -191,6 +223,26 @@ class HUD:
                 cur = self._levels[i]
                 self._levels[i] = cur + (target - cur) * (0.55 if target > cur else 0.22)
             self._view.setLevels_(list(self._levels))
+
+    def _apply_pop_scale(self, scale: float) -> None:
+        if self._window is None:
+            return
+        layer = self._window.contentView().layer()
+        if layer is None:
+            return
+        cx, cy = _WIDTH / 2, _HEIGHT / 2
+        t = CATransform3DConcat(
+            CATransform3DConcat(
+                CATransform3DMakeTranslation(-cx, -cy, 0),
+                CATransform3DMakeScale(scale, scale, 1.0),
+            ),
+            CATransform3DMakeTranslation(cx, cy, 0),
+        )
+        # Disable the implicit layer animation — we drive the easing ourselves.
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+        layer.setSublayerTransform_(t)
+        CATransaction.commit()
 
     def push_audio(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
@@ -217,6 +269,9 @@ class HUD:
         window.setHasShadow_(True)
         window.setIgnoresMouseEvents_(True)
         window.setCollectionBehavior_(1 << 0)
+        # Layer-back the contentView so we can drive a sublayerTransform
+        # for the spring-pop appear animation.
+        window.contentView().setWantsLayer_(True)
 
         effect = NSVisualEffectView.alloc().initWithFrame_(
             NSMakeRect(0, 0, _WIDTH, _HEIGHT)
