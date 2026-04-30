@@ -32,10 +32,11 @@ from Quartz import (
 
 logger = logging.getLogger(__name__)
 
-_BAR_COUNT = 24
-_WIDTH = 180
-_HEIGHT = 48
-_PAD = 16  # transparent margin around the pill so the spring overshoot doesn't clip
+_BAR_COUNT = 18
+_WIDTH = 120
+_HEIGHT = 36
+_CORNER_RADIUS = _HEIGHT / 2  # full pill, like Wispr Flow
+_PAD = 14  # transparent margin around the pill so the spring overshoot doesn't clip
 _WINDOW_W = _WIDTH + 2 * _PAD
 _WINDOW_H = _HEIGHT + 2 * _PAD
 _BOTTOM_OFFSET = 60
@@ -77,18 +78,22 @@ class _WaveformView(NSView):
             self._draw_waveform()
 
     def _draw_waveform(self) -> None:
+        # Wispr-style: a row of small dots/short bars centered vertically.
+        # At rest they read as a horizontal line of dots; speaking grows them.
         bounds = self.bounds()
         w = bounds.size.width
         h = bounds.size.height
         n = len(self._levels)
         gap = w / n
-        bar_w = max(2.0, gap * 0.6)
+        bar_w = max(1.5, gap * 0.42)
+        min_h = 1.5  # idle dot height
+        max_h = h * 0.55  # peak bar height — never fills the pill
 
         for i, level in enumerate(self._levels):
-            bar_h = max(2.0, level * h * 0.9)
+            bar_h = min_h + level * (max_h - min_h)
             x = i * gap + (gap - bar_w) / 2
             y = (h - bar_h) / 2
-            alpha = 0.45 + 0.55 * level
+            alpha = 0.55 + 0.45 * level
             _WHITE.colorWithAlphaComponent_(alpha).set()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                 NSMakeRect(x, y, bar_w, bar_h), bar_w / 2, bar_w / 2
@@ -121,9 +126,10 @@ class _WaveformView(NSView):
 
 
 _FADE_IN_STEP = 0.55   # alpha added per tick (~2 frames to full opacity at 30Hz)
-_FADE_OUT_STEP = 0.18  # alpha removed per tick (~6 frames to invisible)
 _APPEAR_FRAMES = 7     # spring-pop duration after show (~230ms)
 _APPEAR_START_SCALE = 0.55  # initial pop scale before easing up to 1.0
+_DISAPPEAR_FRAMES = 3  # shrink-and-vanish duration on hide (~100ms)
+_DISAPPEAR_END_SCALE = 0.55  # scale at the moment of vanishing
 
 
 def _ease_out_back(p: float) -> float:
@@ -133,6 +139,12 @@ def _ease_out_back(p: float) -> float:
     c3 = c1 + 1
     p1 = p - 1
     return 1 + c3 * p1 * p1 * p1 + c1 * p1 * p1
+
+
+def _ease_in_quint(p: float) -> float:
+    """easeInQuint — strong hold-then-snap, no anticipation/overshoot."""
+    p = max(0.0, min(1.0, p))
+    return p * p * p * p * p
 
 
 class HUD:
@@ -146,6 +158,7 @@ class HUD:
         self._alpha: float = 0.0
         self._fading_out: bool = False
         self._appear_tick: int = _APPEAR_FRAMES  # _APPEAR_FRAMES = "settled at 1.0"
+        self._disappear_tick: int = 0
 
     def build(self) -> None:
         self._ensure_window()
@@ -180,6 +193,8 @@ class HUD:
         self.show_recording()
 
     def hide(self) -> None:
+        if not self._fading_out:
+            self._disappear_tick = 0
         self._fading_out = True
 
     def tick(self) -> None:
@@ -192,10 +207,16 @@ class HUD:
 
         # Fade in / fade out
         if self._fading_out:
-            self._alpha = max(0.0, self._alpha - _FADE_OUT_STEP)
+            self._disappear_tick = min(self._disappear_tick + 1, _DISAPPEAR_FRAMES)
+            p = self._disappear_tick / _DISAPPEAR_FRAMES
+            eased = _ease_in_quint(p)
+            self._alpha = max(0.0, 1.0 - eased)
+            scale = 1.0 + (_DISAPPEAR_END_SCALE - 1.0) * eased
             self._window.setAlphaValue_(self._alpha)
-            if self._alpha <= 0.0:
+            self._apply_pop_scale(scale)
+            if self._disappear_tick >= _DISAPPEAR_FRAMES:
                 self._window.orderOut_(None)
+                self._apply_pop_scale(1.0)  # reset for next show
             return
         else:
             self._alpha = min(1.0, self._alpha + _FADE_IN_STEP)
@@ -215,7 +236,7 @@ class HUD:
             self._view.setTick_(self._tick)
         else:
             rms = self._current_rms
-            base = min(rms * 140, 1.0)
+            base = min(rms * 220, 1.0)
             phase = self._tick * 0.18
             for i in range(_BAR_COUNT):
                 t = i / (_BAR_COUNT - 1)
@@ -224,7 +245,7 @@ class HUD:
                 target = base * envelope * (0.7 + 0.3 * wave)
                 target = max(0.02, min(1.0, target))
                 cur = self._levels[i]
-                self._levels[i] = cur + (target - cur) * (0.55 if target > cur else 0.22)
+                self._levels[i] = cur + (target - cur) * (0.75 if target > cur else 0.35)
             self._view.setLevels_(list(self._levels))
 
     def _apply_pop_scale(self, scale: float) -> None:
@@ -249,7 +270,7 @@ class HUD:
 
     def push_audio(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
-        self._current_rms = max(rms, self._current_rms * 0.25)
+        self._current_rms = max(rms, self._current_rms * 0.12)
 
     def _ensure_window(self) -> None:
         if self._window is not None:
@@ -281,14 +302,28 @@ class HUD:
         effect = NSVisualEffectView.alloc().initWithFrame_(
             NSMakeRect(_PAD, _PAD, _WIDTH, _HEIGHT)
         )
-        effect.setMaterial_(2)
+        # Material 8 = HUD window — darker base than material 2.
+        effect.setMaterial_(8)
         effect.setState_(1)
         effect.setWantsLayer_(True)
-        effect.layer().setCornerRadius_(22)
+        effect.layer().setCornerRadius_(_CORNER_RADIUS)
         effect.layer().setMasksToBounds_(True)
 
+        # Dark overlay on top of the blur for the solid near-black look.
+        # Drops translucency without losing all of the depth from the blur.
+        darken = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _WIDTH, _HEIGHT)
+        )
+        darken.setWantsLayer_(True)
+        darken.layer().setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.02, 0.02, 0.03, 0.94
+            ).CGColor()
+        )
+        effect.addSubview_(darken)
+
         self._view = _WaveformView.alloc().initWithFrame_(
-            NSMakeRect(14, 10, _WIDTH - 28, _HEIGHT - 20)
+            NSMakeRect(20, 6, _WIDTH - 40, _HEIGHT - 12)
         )
         effect.addSubview_(self._view)
         window.contentView().addSubview_(effect)
