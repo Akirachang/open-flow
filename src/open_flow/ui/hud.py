@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 _BAR_COUNT = 24
 _WIDTH = 180
 _HEIGHT = 48
+_PAD = 16  # transparent margin around the pill so the spring overshoot doesn't clip
+_WINDOW_W = _WIDTH + 2 * _PAD
+_WINDOW_H = _HEIGHT + 2 * _PAD
 _BOTTOM_OFFSET = 60
 _DECAY = 0.92
 
@@ -230,7 +233,7 @@ class HUD:
         layer = self._window.contentView().layer()
         if layer is None:
             return
-        cx, cy = _WIDTH / 2, _HEIGHT / 2
+        cx, cy = _WINDOW_W / 2, _WINDOW_H / 2
         t = CATransform3DConcat(
             CATransform3DConcat(
                 CATransform3DMakeTranslation(-cx, -cy, 0),
@@ -254,11 +257,13 @@ class HUD:
 
         screen = NSScreen.mainScreen()
         sf = screen.frame()
-        x = sf.origin.x + (sf.size.width - _WIDTH) / 2
-        y = sf.origin.y + _BOTTOM_OFFSET
+        # Window is _PAD bigger on every side than the visible pill so the
+        # spring-pop overshoot has room without hitting the window clip.
+        x = sf.origin.x + (sf.size.width - _WINDOW_W) / 2
+        y = sf.origin.y + _BOTTOM_OFFSET - _PAD
 
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, _WIDTH, _HEIGHT),
+            NSMakeRect(x, y, _WINDOW_W, _WINDOW_H),
             NSWindowStyleMaskBorderless,
             NSBackingStoreBuffered,
             False,
@@ -274,7 +279,7 @@ class HUD:
         window.contentView().setWantsLayer_(True)
 
         effect = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, _WIDTH, _HEIGHT)
+            NSMakeRect(_PAD, _PAD, _WIDTH, _HEIGHT)
         )
         effect.setMaterial_(2)
         effect.setState_(1)
