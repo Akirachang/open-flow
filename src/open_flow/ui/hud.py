@@ -2,13 +2,15 @@
 
 States:
   recording  — animated waveform bars
-  loading    — three pulsing dots
+  loading    — bars stay visible (idling at silence) and the pill grows on
+               the right to reveal a spinning wheel
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import random
 
 import numpy as np
 import objc
@@ -16,6 +18,7 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSBezierPath,
     NSColor,
+    NSMakePoint,
     NSMakeRect,
     NSScreen,
     NSView,
@@ -32,12 +35,20 @@ from Quartz import (
 
 logger = logging.getLogger(__name__)
 
-_BAR_COUNT = 18
-_WIDTH = 120
-_HEIGHT = 36
+_BAR_COUNT = 14
+_WIDTH = 100
+_HEIGHT = 30
 _CORNER_RADIUS = _HEIGHT / 2  # full pill, like Wispr Flow
 _PAD = 14  # transparent margin around the pill so the spring overshoot doesn't clip
-_WINDOW_W = _WIDTH + 2 * _PAD
+_SPINNER_SIZE = 14   # spinner-view side length
+_SPINNER_GAP = 8     # gap between the bars' right edge and the spinner
+_SPINNER_RIGHT_PAD = 12  # gap between the spinner's right edge and the pill border
+# Pill grows on the right just enough to fit: gap + spinner + right padding,
+# minus the spare right padding that was already there in the recording state.
+_RECORDING_RIGHT_PAD = 20  # bars are inset 20 from each side of the recording pill
+_LOADING_EXTRA = _SPINNER_GAP + _SPINNER_SIZE + _SPINNER_RIGHT_PAD - _RECORDING_RIGHT_PAD
+_GROW_RATE = 0.55    # per-tick lerp toward the target pill width
+_WINDOW_W = _WIDTH + _LOADING_EXTRA + 2 * _PAD  # max width — sized for the loading state
 _WINDOW_H = _HEIGHT + 2 * _PAD
 _BOTTOM_OFFSET = 60
 _DECAY = 0.92
@@ -55,29 +66,13 @@ class _WaveformView(NSView):
         if self is None:
             return None
         self._levels: list[float] = [0.05] * _BAR_COUNT
-        self._state: str = _STATE_RECORDING
-        self._tick: int = 0
         return self
-
-    def setState_(self, state: str) -> None:
-        self._state = state
-        self.setNeedsDisplay_(True)
 
     def setLevels_(self, levels: list[float]) -> None:
         self._levels = levels
         self.setNeedsDisplay_(True)
 
-    def setTick_(self, tick: int) -> None:
-        self._tick = tick
-        self.setNeedsDisplay_(True)
-
     def drawRect_(self, rect) -> None:
-        if self._state == _STATE_LOADING:
-            self._draw_loading()
-        else:
-            self._draw_waveform()
-
-    def _draw_waveform(self) -> None:
         # Wispr-style: a row of small dots/short bars centered vertically.
         # At rest they read as a horizontal line of dots; speaking grows them.
         bounds = self.bounds()
@@ -87,7 +82,7 @@ class _WaveformView(NSView):
         gap = w / n
         bar_w = max(1.5, gap * 0.42)
         min_h = 1.5  # idle dot height
-        max_h = h * 0.55  # peak bar height — never fills the pill
+        max_h = h * 0.48  # peak bar height — never fills the pill
 
         for i, level in enumerate(self._levels):
             bar_h = min_h + level * (max_h - min_h)
@@ -99,30 +94,47 @@ class _WaveformView(NSView):
                 NSMakeRect(x, y, bar_w, bar_h), bar_w / 2, bar_w / 2
             ).fill()
 
-    def _draw_loading(self) -> None:
+
+class _SpinnerView(NSView):
+    """Eight rotating spokes with a fading-tail alpha pattern."""
+
+    _N_SPOKES = 8
+    _TICKS_PER_REV = 24  # ~0.8s per revolution at 30Hz
+
+    def initWithFrame_(self, frame) -> "_SpinnerView":
+        self = objc.super(_SpinnerView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._tick: int = 0
+        return self
+
+    def setTick_(self, tick: int) -> None:
+        self._tick = tick
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, rect) -> None:
         bounds = self.bounds()
-        w = bounds.size.width
-        h = bounds.size.height
-
-        dot_r = 4.0
-        n_dots = 3
-        spacing = 18.0
-        total = (n_dots - 1) * spacing
-        start_x = (w - total) / 2
-
-        t = self._tick
-        for i in range(n_dots):
-            # Each dot pulses with a phase offset — creates a wave effect
-            phase = (t / 8.0 - i * 0.4) * math.pi
-            scale = 0.5 + 0.5 * math.sin(phase)
-            r = dot_r * (0.6 + 0.4 * scale)
-            alpha = 0.4 + 0.6 * scale
-            cx = start_x + i * spacing
-            cy = h / 2
+        cx = bounds.size.width / 2.0
+        cy = bounds.size.height / 2.0
+        outer_r = min(cx, cy) - 1.5
+        inner_r = outer_r * 0.5
+        phase = (self._tick / self._TICKS_PER_REV) * 2.0 * math.pi
+        for i in range(self._N_SPOKES):
+            angle = phase + i * 2.0 * math.pi / self._N_SPOKES
+            # Trailing-fade alpha: brightest spoke is the leading one,
+            # alpha decreases around the wheel.
+            alpha = 0.18 + 0.82 * ((i + 1) / self._N_SPOKES)
+            x1 = cx + math.cos(angle) * inner_r
+            y1 = cy + math.sin(angle) * inner_r
+            x2 = cx + math.cos(angle) * outer_r
+            y2 = cy + math.sin(angle) * outer_r
+            path = NSBezierPath.bezierPath()
+            path.setLineWidth_(1.6)
+            path.setLineCapStyle_(1)  # NSLineCapStyleRound
+            path.moveToPoint_(NSMakePoint(x1, y1))
+            path.lineToPoint_(NSMakePoint(x2, y2))
             _WHITE.colorWithAlphaComponent_(alpha).set()
-            NSBezierPath.bezierPathWithOvalInRect_(
-                NSMakeRect(cx - r, cy - r, r * 2, r * 2)
-            ).fill()
+            path.stroke()
 
 
 _FADE_IN_STEP = 0.55   # alpha added per tick (~2 frames to full opacity at 30Hz)
@@ -151,14 +163,23 @@ class HUD:
     def __init__(self) -> None:
         self._window: NSWindow | None = None
         self._view: _WaveformView | None = None
+        self._effect: NSVisualEffectView | None = None
+        self._darken: NSView | None = None
+        self._spinner: _SpinnerView | None = None
         self._current_rms: float = 0.0
         self._levels: list[float] = [0.05] * _BAR_COUNT
         self._state: str = _STATE_RECORDING
         self._tick: int = 0
         self._alpha: float = 0.0
         self._fading_out: bool = False
+        # _dismissing covers the "shrink the wheel area first" phase that runs
+        # before the snap-shrink-and-vanish phase (_fading_out).
+        self._dismissing: bool = False
         self._appear_tick: int = _APPEAR_FRAMES  # _APPEAR_FRAMES = "settled at 1.0"
         self._disappear_tick: int = 0
+        # Smoothly-eased extra width on the right of the pill for the spinner.
+        self._extra_width: float = 0.0
+        self._target_extra_width: float = 0.0
 
     def build(self) -> None:
         self._ensure_window()
@@ -169,9 +190,12 @@ class HUD:
         self._levels = [0.05] * _BAR_COUNT
         self._current_rms = 0.0
         self._fading_out = False
+        self._dismissing = False
         self._appear_tick = 0
-        if self._view:
-            self._view.setState_(_STATE_RECORDING)
+        # Snap pill back to the narrow recording size before the pop animation.
+        self._extra_width = 0.0
+        self._target_extra_width = 0.0
+        self._apply_extra_width(0.0)
         if self._window:
             self._window.setAlphaValue_(0.0)
             self._apply_pop_scale(_APPEAR_START_SCALE)
@@ -179,11 +203,17 @@ class HUD:
 
     def show_loading(self) -> None:
         self._ensure_window()
+        was_visible = self._window is not None and self._window.isVisible()
         self._state = _STATE_LOADING
         self._fading_out = False
-        if self._view:
-            self._view.setState_(_STATE_LOADING)
-        if self._window and not self._window.isVisible():
+        self._dismissing = False
+        # Drive the pill to grow on the right; tick() will lerp it open.
+        self._target_extra_width = float(_LOADING_EXTRA)
+        if self._window and not was_visible:
+            # First-time show (unusual: loading without a prior recording) —
+            # start from the narrow size and pop in like recording.
+            self._extra_width = 0.0
+            self._apply_extra_width(0.0)
             self._appear_tick = 0
             self._window.setAlphaValue_(0.0)
             self._apply_pop_scale(_APPEAR_START_SCALE)
@@ -193,9 +223,17 @@ class HUD:
         self.show_recording()
 
     def hide(self) -> None:
-        if not self._fading_out:
+        if self._fading_out or self._dismissing:
+            return  # already on the way out
+        # If the pill is wider than recording size, first close the wheel
+        # area; tick() will start the snap-shrink-and-vanish once it reaches
+        # the recording width.
+        self._target_extra_width = 0.0
+        if self._extra_width > 0.5:
+            self._dismissing = True
+        else:
             self._disappear_tick = 0
-        self._fading_out = True
+            self._fading_out = True
 
     def tick(self) -> None:
         if self._view is None or self._window is None:
@@ -232,20 +270,58 @@ class HUD:
             if self._appear_tick >= _APPEAR_FRAMES:
                 self._apply_pop_scale(1.0)
 
+        # Smooth growth/shrink of the pill toward its target width.
+        if abs(self._extra_width - self._target_extra_width) > 0.5:
+            self._extra_width += (
+                self._target_extra_width - self._extra_width
+            ) * _GROW_RATE
+            self._apply_extra_width(self._extra_width)
+        elif self._extra_width != self._target_extra_width:
+            self._extra_width = self._target_extra_width
+            self._apply_extra_width(self._extra_width)
+
+        # If we were closing the wheel area as a prelude to dismissing,
+        # hand off to the snap-shrink-and-vanish phase now that the pill is
+        # back at recording width.
+        if self._dismissing and self._extra_width <= 0.5:
+            self._extra_width = 0.0
+            self._apply_extra_width(0.0)
+            self._dismissing = False
+            self._disappear_tick = 0
+            self._fading_out = True
+
+        # Drive the spinner once it's at all visible.
+        if self._spinner is not None and self._extra_width > 0.5:
+            self._spinner.setTick_(self._tick)
+
         if self._state == _STATE_LOADING:
-            self._view.setTick_(self._tick)
+            # Loading: freeze the wave. Decay any in-flight levels down to
+            # idle dots quickly, then stop pumping the view.
+            settled = True
+            for i in range(_BAR_COUNT):
+                if self._levels[i] > 0.025:
+                    self._levels[i] += (0.0 - self._levels[i]) * 0.5
+                    settled = False
+            if not settled:
+                self._view.setLevels_(list(self._levels))
         else:
+            # Recording: bars track the mic with a noise-floor gate so
+            # background hum doesn't keep them twitching when silent.
             rms = self._current_rms
-            base = min(rms * 220, 1.0)
-            phase = self._tick * 0.18
+            if rms < 0.008:
+                base = 0.0
+            else:
+                base = min((rms - 0.008) * 220, 1.0)
             for i in range(_BAR_COUNT):
                 t = i / (_BAR_COUNT - 1)
-                envelope = math.sin(math.pi * t)
-                wave = 0.5 + 0.5 * math.sin(phase + t * math.pi * 2)
-                target = base * envelope * (0.7 + 0.3 * wave)
+                envelope = 0.55 + 0.45 * math.sin(math.pi * t)
+                jitter = random.uniform(0.65, 1.15)
+                target = base * envelope * jitter
                 target = max(0.02, min(1.0, target))
                 cur = self._levels[i]
-                self._levels[i] = cur + (target - cur) * (0.75 if target > cur else 0.35)
+                self._levels[i] = cur + (target - cur) * (
+                    0.55 if target > cur else 0.32
+                )
             self._view.setLevels_(list(self._levels))
 
     def _apply_pop_scale(self, scale: float) -> None:
@@ -254,7 +330,12 @@ class HUD:
         layer = self._window.contentView().layer()
         if layer is None:
             return
-        cx, cy = _WINDOW_W / 2, _WINDOW_H / 2
+        # Scale around the visible pill's center, not the window center —
+        # the pill is left-anchored inside an oversized window so the
+        # right side has room to grow during loading.
+        pill_w = _WIDTH + self._extra_width
+        cx = _PAD + pill_w / 2
+        cy = _PAD + _HEIGHT / 2
         t = CATransform3DConcat(
             CATransform3DConcat(
                 CATransform3DMakeTranslation(-cx, -cy, 0),
@@ -268,6 +349,21 @@ class HUD:
         layer.setSublayerTransform_(t)
         CATransaction.commit()
 
+    def _apply_extra_width(self, extra: float) -> None:
+        """Resize the visible pill (effect view + dark overlay) on the right."""
+        if self._effect is None or self._darken is None:
+            return
+        pill_w = _WIDTH + extra
+        self._effect.setFrame_(NSMakeRect(_PAD, _PAD, pill_w, _HEIGHT))
+        self._darken.setFrame_(NSMakeRect(0, 0, pill_w, _HEIGHT))
+        if self._spinner is not None:
+            # Fade the spinner in proportional to how far the pill has grown,
+            # so it doesn't pop in fully-formed when the rounded corner reaches it.
+            fade = max(0.0, min(1.0, extra / _LOADING_EXTRA))
+            self._spinner.setAlphaValue_(fade)
+        if self._window is not None:
+            self._window.invalidateShadow()
+
     def push_audio(self, chunk: np.ndarray) -> None:
         rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
         self._current_rms = max(rms, self._current_rms * 0.12)
@@ -278,9 +374,11 @@ class HUD:
 
         screen = NSScreen.mainScreen()
         sf = screen.frame()
-        # Window is _PAD bigger on every side than the visible pill so the
-        # spring-pop overshoot has room without hitting the window clip.
-        x = sf.origin.x + (sf.size.width - _WINDOW_W) / 2
+        # The window is sized for the loading-state max width so the pill can
+        # grow on the right without resizing the window. Position it so that
+        # the recording-state pill (left-anchored with _PAD margin) is centered
+        # on screen.
+        x = sf.origin.x + (sf.size.width - _WIDTH) / 2 - _PAD
         y = sf.origin.y + _BOTTOM_OFFSET - _PAD
 
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -326,6 +424,22 @@ class HUD:
             NSMakeRect(20, 6, _WIDTH - 40, _HEIGHT - 12)
         )
         effect.addSubview_(self._view)
+
+        # Spinner sits a few px to the right of the bars at a fixed position.
+        # During recording it's hidden by alpha=0; as the pill grows it
+        # fades in and the new pill area provides breathing room on its right.
+        bars_right_edge = 20 + (_WIDTH - 40)  # see _view's frame above
+        spinner_x = bars_right_edge + _SPINNER_GAP
+        spinner_y = (_HEIGHT - _SPINNER_SIZE) / 2
+        spinner = _SpinnerView.alloc().initWithFrame_(
+            NSMakeRect(spinner_x, spinner_y, _SPINNER_SIZE, _SPINNER_SIZE)
+        )
+        spinner.setAlphaValue_(0.0)
+        effect.addSubview_(spinner)
+
         window.contentView().addSubview_(effect)
 
         self._window = window
+        self._effect = effect
+        self._darken = darken
+        self._spinner = spinner
