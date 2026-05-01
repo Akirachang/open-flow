@@ -99,7 +99,7 @@ class _SpinnerView(NSView):
     """Eight rotating spokes with a fading-tail alpha pattern."""
 
     _N_SPOKES = 8
-    _TICKS_PER_REV = 24  # ~0.8s per revolution at 30Hz
+    _TICKS_PER_REV = 14  # ~0.47s per revolution at 30Hz
 
     def initWithFrame_(self, frame) -> "_SpinnerView":
         self = objc.super(_SpinnerView, self).initWithFrame_(frame)
